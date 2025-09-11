@@ -1,0 +1,9 @@
+# Значения по умолчанию; можно перекрывать -e или в inventory.
+service_port: 62050
+api_port: 62051
+add_as_new_host: true
+usage_coefficient: 1.0
+service_protocol: "rest"     # включаем REST на узле (рекомендовано) :contentReference[oaicite:4]{index=4}
+
+# Проверка TLS панели в Ansible uri-запросах:
+panel_validate_certs: true

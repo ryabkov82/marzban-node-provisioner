@@ -1,0 +1,17 @@
+{
+  "yaml.schemaStore.enable": false,
+  "yaml.schemas": {
+    "./.vscode/ansible-requirements.schema.json": [
+      "ansible/collections/requirements.yml",
+      "roles/**/meta/requirements.yml"
+    ],
+    "./.vscode/ansible-vars.schema.json": [
+      "ansible/**/group_vars/**/*.{yml,yaml}",
+      "ansible/**/host_vars/**/*.{yml,yaml}"
+    ]      
+  },
+  "yaml.customTags": [
+    "!vault scalar",
+    "!vault mapping"
+  ]  
+}
