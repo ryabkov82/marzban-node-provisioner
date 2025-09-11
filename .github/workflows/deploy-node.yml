@@ -1,0 +1,83 @@
+name: Deploy Marzban Node
+
+on:
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: "Список узлов (IP/host), по одному в строке"
+        required: true
+      ssh_user:
+        description: "SSH пользователь"
+        required: true
+        default: "root"
+      service_port:
+        description: "Node service port"
+        required: false
+        default: "62050"
+      api_port:
+        description: "Node API port"
+        required: false
+        default: "62051"
+      add_as_new_host:
+        type: boolean
+        default: true
+        description: "Add node as new host for every inbound"
+      usage_coefficient:
+        description: "Usage coefficient"
+        required: false
+        default: "1.0"
+      panel_verify_tls:
+        type: boolean
+        default: true
+        description: "Verify TLS certs for panel API requests"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ansible
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install ansible==9.5.1
+          ansible --version
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r ansible/collections/requirements.yml
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Build dynamic inventory
+        id: inv
+        env:
+          NODES: ${{ github.event.inputs.nodes }}
+          SSH_USER: ${{ github.event.inputs.ssh_user }}
+        run: |
+          echo "[marzban_nodes]" > inventory.ini
+          while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            echo "$line ansible_user=$SSH_USER" >> inventory.ini
+            ssh-keyscan -H "$line" >> ~/.ssh/known_hosts 2>/dev/null || true
+          done
+          cat inventory.ini
+
+      - name: Run playbook
+        env:
+          PANEL_URL: ${{ secrets.PANEL_URL }}
+          PANEL_USERNAME: ${{ secrets.PANEL_USERNAME }}
+          PANEL_PASSWORD: ${{ secrets.PANEL_PASSWORD }}
+          PANEL_VALIDATE_CERTS: ${{ github.event.inputs.panel_verify_tls }}
+        run: |
+          ansible-playbook -i inventory.ini ansible/playbooks/provision_node.yml \
+            -e panel_url="$PANEL_URL" \
+            -e panel_username="$PANEL_USERNAME" \
+            -e panel_password="$PANEL_PASSWORD" \
+            -e panel_validate_certs="$PANEL_VALIDATE_CERTS" \
+            -e service_port="${{ github.event.inputs.service_port }}" \
+            -e api_port="${{ github.event.inputs.api_port }}" \
+            -e add_as_new_host="${{ github.event.inputs.add_as_new_host }}" \
+            -e usage_coefficient="${{ github.event.inputs.usage_coefficient }}"
