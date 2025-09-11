@@ -7,3 +7,15 @@ service_protocol: "rest"     # включаем REST на узле (рекоме
 
 # Проверка TLS панели в Ansible uri-запросах:
 panel_validate_certs: true
+
+website_domains:
+  - site.digitalstreamers.xyz
+  - www.digitalstreamers.xyz
+
+# nginx TLS (поменяйте на реальные сертификаты в проде)
+nginx_ssl_cert: /etc/ssl/certs/ssl-cert-snakeoil.pem
+nginx_ssl_key:  /etc/ssl/private/ssl-cert-snakeoil.key
+
+# бинды сервисов
+nginx_https_bind: 127.0.0.1:8443
+xray_tcp_bind:    127.0.0.1:8444

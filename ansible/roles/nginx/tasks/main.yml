@@ -1,0 +1,32 @@
+---
+- name: Install nginx and ssl-cert (snakeoil)
+  ansible.builtin.apt:
+    name:
+      - nginx
+      - ssl-cert
+    state: present
+    update_cache: true
+  tags: [nginx]
+
+- name: Ensure conf.d exists
+  ansible.builtin.file:
+    path: /etc/nginx/conf.d
+    state: directory
+    mode: "0755"
+  tags: [nginx]
+
+- name: Deploy HTTPS vhost to 8443
+  ansible.builtin.template:
+    src: https_8443.conf.j2
+    dest: /etc/nginx/conf.d/https_8443.conf
+    mode: "0644"
+    backup: true
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Ensure nginx enabled and running
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+  tags: [nginx]

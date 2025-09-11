@@ -13,5 +13,6 @@
   "yaml.customTags": [
     "!vault scalar",
     "!vault mapping"
-  ]  
+  ],
+  "ansible.python.interpreterPath": "/bin/python3"
 }

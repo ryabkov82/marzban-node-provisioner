@@ -5,44 +5,36 @@ set -euo pipefail
 : "${PANEL_URL:?need PANEL_URL}"
 : "${PANEL_USERNAME:?need PANEL_USERNAME}"
 : "${PANEL_PASSWORD:?need PANEL_PASSWORD}"
-: "${NODE:?need NODE (ip or host)}"
+: "${SSH_TARGET:?need SSH_TARGET (ssh alias or user@host)}"
 
-SSH_USER="${SSH_USER:-root}"
-PANEL_VERIFY_TLS="${PANEL_VERIFY_TLS:-true}"   # set to "false" for self-signed panel TLS
+# Optional
+NODE_ADDRESS="${NODE_ADDRESS:-}"             # address for panel (IP/DNS); auto-detected if empty
+PANEL_VERIFY_TLS="${PANEL_VERIFY_TLS:-true}" # set to "false" for self-signed panel TLS
 SERVICE_PORT="${SERVICE_PORT:-62050}"
 API_PORT="${API_PORT:-62051}"
 ADD_AS_NEW_HOST="${ADD_AS_NEW_HOST:-true}"
 USAGE_COEFF="${USAGE_COEFF:-1}"
+SSH_KEY="${SSH_KEY:-}"                        # overrides IdentityFile from ssh config if set
 
-# Optional flags to control flow
+# Flow switches
 SKIP_UPGRADE="${SKIP_UPGRADE:-false}"
 SKIP_DOCKER="${SKIP_DOCKER:-false}"
 SKIP_REGISTER="${SKIP_REGISTER:-false}"
-SSH_KEY="${SSH_KEY:-}"   # path to private key (e.g., ~/.ssh/marzban_ci)
 [[ "${DEBUG:-}" == "1" ]] && set -x
 
-# SSH options
-SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o BatchMode=yes"
-if [[ -n "$SSH_KEY" ]]; then
-  SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
-fi
+# SSH options (respect ~/.ssh/config)
+SSH_OPTS="-o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
+[[ -n "$SSH_KEY" ]] && SSH_OPTS="$SSH_OPTS -i $SSH_KEY"
 
 # ========= Helpers =========
-_curl() {
-  if [[ "$PANEL_VERIFY_TLS" == "false" ]]; then
-    curl -fsS -k "$@"
-  else
-    curl -fsS "$@"
-  fi
-}
+_curl() { if [[ "$PANEL_VERIFY_TLS" == "false" ]]; then curl -fsS -k "$@"; else curl -fsS "$@"; fi; }
 
 wait_for_ssh() {
-  local host="$1" user="${2:-root}" tries="${3:-120}"
-  echo "[wait] Waiting for SSH on ${user}@${host} ..."
+  local target="$1" tries="${2:-120}"
+  echo "[wait] Waiting for SSH on ${target} ..."
   for ((i=1; i<=tries; i++)); do
-    if ssh $SSH_OPTS "${user}@${host}" true 2>/dev/null; then
-      echo "[wait] SSH is back."
-      return 0
+    if ssh $SSH_OPTS "$target" true 2>/dev/null; then
+      echo "[wait] SSH is back."; return 0
     fi
     sleep 2
   done
@@ -50,15 +42,7 @@ wait_for_ssh() {
   return 1
 }
 
-require_tool() {
-  local bin="$1" hint="$2"
-  if ! command -v "$bin" >/dev/null 2>&1; then
-    echo "ERROR: '$bin' not found. $hint" >&2
-    exit 1
-  fi
-}
-
-# ========= Checks =========
+require_tool() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: '$1' not found. $2" >&2; exit 1; }; }
 require_tool jq "Install it: sudo apt-get update && sudo apt-get install -y jq"
 require_tool ssh "Install OpenSSH client."
 require_tool curl "Install curl."
@@ -68,68 +52,42 @@ echo "[1/5] Getting admin token from panel..."
 TOKEN=$(_curl -X POST "$PANEL_URL/api/admin/token" \
   -d "username=$PANEL_USERNAME" -d "password=$PANEL_PASSWORD" -d "grant_type=password" \
   | jq -r .access_token)
-
-if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
-  echo "ERROR: Failed to obtain access token. Check PANEL_URL/credentials." >&2
-  exit 1
-fi
+[[ -n "$TOKEN" && "$TOKEN" != "null" ]]
 
 # ========= 2) Fetch node certificate =========
 echo "[2/5] Fetching node certificate from panel..."
 CERT=$(_curl -H "Authorization: Bearer $TOKEN" "$PANEL_URL/api/node/settings" | jq -r .certificate)
-
-if [[ -z "$CERT" || "$CERT" == "null" ]]; then
-  echo "ERROR: Failed to fetch node certificate." >&2
-  exit 1
-fi
+[[ -n "$CERT" && "$CERT" != "null" ]]
 
 # ========= 3) Remote: system upgrade (optional) =========
 if [[ "$SKIP_UPGRADE" != "true" ]]; then
-  echo "[3/5] Upgrading remote system (noninteractive) on ${SSH_USER}@${NODE} ..."
-  UPGRADE_STATUS=$(ssh $SSH_OPTS "${SSH_USER}@${NODE}" 'bash -s' <<'EOSH'
+  echo "[3/5] Upgrading remote system (noninteractive) on ${SSH_TARGET} ..."
+  UPGRADE_STATUS=$(ssh $SSH_OPTS "$SSH_TARGET" 'bash -s' <<'EOSH'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
-
-# pick sudo only if not root
 if [ "$(id -u)" -ne 0 ]; then SUDO=sudo; else SUDO=; fi
-
-# APT noninteractive defaults (keep old configs by default)
 $SUDO install -m 0644 /dev/null /etc/apt/apt.conf.d/99noninteractive || true
 $SUDO tee /etc/apt/apt.conf.d/99noninteractive >/dev/null <<'EOF'
 APT::Get::Assume-Yes "true";
-Dpkg::Options {
-  "--force-confdef";
-  "--force-confold";
-}
+Dpkg::Options { "--force-confdef"; "--force-confold"; }
 Dpkg::Use-Pty "0";
 EOF
-
-# needrestart: auto-restart services
 $SUDO mkdir -p /etc/needrestart/conf.d
 $SUDO tee /etc/needrestart/conf.d/zzz-ansible.conf >/dev/null <<'EOF'
 $nrconf{restart} = 'a';
 EOF
-
-# Upgrade
 $SUDO apt-get -yq update
 $SUDO apt-get -yq full-upgrade
 $SUDO apt-get -yq autoremove --purge
 $SUDO apt-get -yq autoclean
-
-# Report reboot requirement without rebooting here (we'll handle it from the caller)
-if [ -f /var/run/reboot-required ]; then
-  echo REBOOT_REQUIRED
-else
-  echo NO_REBOOT
-fi
+if [ -f /var/run/reboot-required ]; then echo REBOOT_REQUIRED; else echo NO_REBOOT; fi
 EOSH
 )
-
   if [[ "$UPGRADE_STATUS" == *"REBOOT_REQUIRED"* ]]; then
-    echo "[3/5] Reboot required. Rebooting ${NODE} ..."
-    ssh $SSH_OPTS "${SSH_USER}@${NODE}" 'sudo reboot || reboot' || true
+    echo "[3/5] Reboot required. Rebooting ${SSH_TARGET} ..."
+    ssh $SSH_OPTS "$SSH_TARGET" 'sudo reboot || reboot' || true
     sleep 5
-    wait_for_ssh "$NODE" "$SSH_USER"
+    wait_for_ssh "$SSH_TARGET"
   else
     echo "[3/5] No reboot required."
   fi
@@ -140,27 +98,19 @@ fi
 # ========= 4) Remote: Docker & container (optional) =========
 if [[ "$SKIP_DOCKER" != "true" ]]; then
   echo "[4/5] Installing Docker (if needed), writing cert, starting marzban-node ..."
-  ssh $SSH_OPTS "${SSH_USER}@${NODE}" 'bash -s' <<'EOSH'
+  ssh $SSH_OPTS "$SSH_TARGET" 'bash -s' <<'EOSH'
 set -euo pipefail
-
-# pick sudo only if not root
 if [ "$(id -u)" -ne 0 ]; then SUDO=sudo; else SUDO=; fi
-
-# Install Docker if missing (convenience script)
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | $SUDO sh
 fi
-
 $SUDO mkdir -p /var/lib/marzban-node
 EOSH
-
-  # Copy certificate
-  ssh $SSH_OPTS "${SSH_USER}@${NODE}" "cat | sudo tee /var/lib/marzban-node/ssl_client_cert.pem >/dev/null" <<<"$CERT"
-
-  # (Re)start container
-  ssh $SSH_OPTS "${SSH_USER}@${NODE}" 'bash -s' <<'EOSH'
+# Copy certificate
+echo "$CERT" | ssh $SSH_OPTS "$SSH_TARGET" "sudo tee /var/lib/marzban-node/ssl_client_cert.pem >/dev/null"
+# (Re)start container
+ssh $SSH_OPTS "$SSH_TARGET" 'bash -s' <<'EOSH'
 set -euo pipefail
-# if not root, add current user to docker group for next sessions (no effect in current session)
 if [ "$(id -u)" -ne 0 ]; then SUDO=sudo; else SUDO=; fi
 $SUDO docker rm -f marzban-node >/dev/null 2>&1 || true
 $SUDO docker run -d --name marzban-node --restart always --network host \
@@ -175,13 +125,17 @@ fi
 
 # ========= 5) Register node in panel (optional) =========
 if [[ "$SKIP_REGISTER" != "true" ]]; then
-  echo "[5/5] Registering node in panel..."
-  _curl -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
+  # Determine address for panel: NODE_ADDRESS > ssh HostName > SSH_TARGET w/o user@
+  HOST_ONLY="${SSH_TARGET##*@}"
+  RESOLVED_HOST=$(ssh -G "$SSH_TARGET" 2>/dev/null | awk '/^hostname /{print $2; exit}')
+  ADDRESS="${NODE_ADDRESS:-${RESOLVED_HOST:-$HOST_ONLY}}"
+
+  echo "[5/5] Registering node in panel as address=${ADDRESS} ..."
+  _curl -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
     -X POST "$PANEL_URL/api/node" \
     -d '{
-      "name":"'"$NODE"'",
-      "address":"'"$NODE"'",
+      "name":"'"$ADDRESS"'",
+      "address":"'"$ADDRESS"'",
       "port":'"$SERVICE_PORT"',
       "api_port":'"$API_PORT"',
       "add_as_new_host":'"$ADD_AS_NEW_HOST"',

@@ -110,8 +110,8 @@ script-register-only: ## Register node in panel only (skip upgrade & docker)
 	chmod +x scripts/add-node.sh
 	SKIP_UPGRADE=true SKIP_DOCKER=true ./scripts/add-node.sh
 
-node-logs: ## Tail marzban-node logs on NODE (requires SSH_USER/NODE in env/.env)
+node-logs: ## Tail marzban-node logs on SSH_TARGET (alias from ~/.ssh/config)
 	$(LOAD_ENV)
-	[[ -n "$${SSH_USER:-}" && -n "$${NODE:-}" ]] || { echo "Set SSH_USER and NODE (env or .env)"; exit 1; }
-	ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes $${SSH_KEY:+-i "$${SSH_KEY}"} \
-	  "$${SSH_USER}@$${NODE}" 'docker logs -f --since=1h marzban-node || true'
+	[[ -n "$${SSH_TARGET:-}" ]] || { echo "Set SSH_TARGET (env or .env)"; exit 1; }
+	ssh -o BatchMode=yes $${SSH_KEY:+-i "$${SSH_KEY}"} "$${SSH_TARGET}" \
+	  'docker logs -f --since=1h marzban-node || true'

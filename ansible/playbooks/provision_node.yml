@@ -191,6 +191,16 @@
           SSL_CLIENT_CERT_FILE: "{{ ssl_dir }}/ssl_client_cert.pem"
           SERVICE_PROTOCOL: "{{ service_protocol }}"
 
+    - name: Setup HAProxy
+      ansible.builtin.import_role:
+        name: haproxy
+      tags: [haproxy]
+
+    - name: Setup nginx
+      ansible.builtin.import_role:
+        name: nginx
+      tags: [nginx]
+
 # Play 3: Register nodes in the panel
 - name: Register nodes in Marzban panel
   hosts: marzban_nodes
