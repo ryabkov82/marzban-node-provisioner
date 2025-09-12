@@ -43,23 +43,23 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      # ansible.cfg в КОРНЕ проекта
+      # ansible.cfg лежит в КОРНЕ репозитория
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible.cfg
 
     steps:
-      - name: Checkout
+      - name: "Checkout"
         uses: actions/checkout@v4
 
-      - name: Install Ansible
+      - name: "Install Ansible"
         run: |
           python3 -m pip install --upgrade pip
           pip install ansible==9.5.1 ansible-lint
           ansible --version
 
-      - name: Install Ansible collections
+      - name: "Install Ansible collections"
         run: ansible-galaxy collection install -r ansible/collections/requirements.yml
 
-      - name: Setup SSH agent
+      - name: "Setup SSH agent"
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -90,7 +90,7 @@ jobs:
           ansible -i ansible/inventories/ci.ini marzban_nodes \
             -m ansible.builtin.debug -a 'var=website_domains' || true
 
-      # ========= РЕЖИМ: ТОЛЬКО ОБНОВЛЕНИЕ ОС =========
+      # ───────── режим: ТОЛЬКО ОБНОВЛЕНИЕ ОС ─────────
       - name: "Update OS via playbook (tags: update,upgrade)"
         if: ${{ inputs.run_mode == 'update_only' }}
         run: |
@@ -102,7 +102,7 @@ jobs:
         run: |
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'who -b; uptime -s'
 
-      # ========= РЕЖИМ: ТОЛЬКО ПРОКСИ (HAProxy + nginx) =========
+      # ───────── режим: ТОЛЬКО ПРОКСИ (HAProxy + nginx) ─────────
       - name: "Apply proxy roles only (haproxy,nginx)"
         if: ${{ inputs.run_mode == 'proxy_only' }}
         run: |
@@ -110,7 +110,7 @@ jobs:
             --tags haproxy,nginx -vv
 
       - name: "Proxy post-check: configs and services"
-        if: ${{ inputs.run_mode == 'proxy_only' || inputs.run_mode == 'full' }}
+        if: ${{ inputs.run_mode == 'proxy_only' }}
         run: |
           set -e
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'haproxy -c -f /etc/haproxy/haproxy.cfg'
@@ -119,32 +119,27 @@ jobs:
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'systemctl is-active nginx;  systemctl is-enabled nginx'
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
 
-          - name: "Proxy post-check: nginx listens on 127.0.0.1:8443"
-          if: ${{ inputs.run_mode == 'proxy_only' || inputs.run_mode == 'full' }}
-          run: |
-            # Проверяем, что на loopback открыт порт 8443 (LISTEN)
-            ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
-              "ss -lnt | awk '\$4 ~ /127\\.0\\.0\\.1:8443/ && \$1 == \"LISTEN\" {found=1} END{exit(found?0:1)}'"
-  
-      - name: "Proxy post-check: nginx content on 127.0.0.1:8443"
-        if: ${{ inputs.run_mode == 'proxy_only' || inputs.run_mode == 'full' }}
+      - name: "Proxy post-check: nginx listens on 127.0.0.1:8443"
+        if: ${{ inputs.run_mode == 'proxy_only' }}
         run: |
-          # Ожидаем тестовую строку из шаблона nginx
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
-            "curl -ks https://127.0.0.1:8443/ | tee /tmp/nginx_check.out | head -1"
+            "ss -lnt | awk '\$4 ~ /127\\.0\\.0\\.1:8443/ && \$1 == \"LISTEN\" {found=1} END{exit(found?0:1)}'"
+
+      - name: "Proxy post-check: nginx content on 127.0.0.1:8443"
+        if: ${{ inputs.run_mode == 'proxy_only' }}
+        run: |
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
             "curl -ks https://127.0.0.1:8443/ | grep -q 'OK from nginx behind HAProxy'"
-  
+
       - name: "Proxy post-check: SNI via HAProxy → nginx (optional)"
-        if: ${{ (inputs.run_mode == 'proxy_only' || inputs.run_mode == 'full') && inputs.test_domain != '' }}
+        if: ${{ inputs.run_mode == 'proxy_only' && inputs.test_domain != '' }}
         env:
           TEST_DOMAIN: ${{ github.event.inputs.test_domain }}
         run: |
-          # Проверяем с узла: HAProxy на :443, прокидываем SNI на nginx:8443
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
             "curl -ks --resolve $TEST_DOMAIN:443:127.0.0.1 https://$TEST_DOMAIN/ | head -1"
 
-      # ========= РЕЖИМ: ПОЛНЫЙ ДЕПЛОЙ =========
+      # ───────── режим: ПОЛНЫЙ ДЕПЛОЙ ─────────
       - name: "Full deploy (panel + node + proxy + register)"
         if: ${{ inputs.run_mode == 'full' }}
         env:
@@ -167,3 +162,34 @@ jobs:
             -e add_as_new_host=$ADD_AS_NEW_HOST \
             -e usage_coefficient=$USAGE_COEFFICIENT \
             -vv
+
+      # Проверки выполняем ПОСЛЕ успешного full deploy
+      - name: "Post-check after FULL: configs and services"
+        if: ${{ inputs.run_mode == 'full' }}
+        run: |
+          set -e
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'haproxy -c -f /etc/haproxy/haproxy.cfg'
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'nginx -t'
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'systemctl is-active haproxy; systemctl is-enabled haproxy'
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'systemctl is-active nginx;  systemctl is-enabled nginx'
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
+
+      - name: "Post-check after FULL: nginx listens on 127.0.0.1:8443"
+        if: ${{ inputs.run_mode == 'full' }}
+        run: |
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
+            "ss -lnt | awk '\$4 ~ /127\\.0\\.0\\.1:8443/ && \$1 == \"LISTEN\" {found=1} END{exit(found?0:1)}'"
+
+      - name: "Post-check after FULL: nginx content on 127.0.0.1:8443"
+        if: ${{ inputs.run_mode == 'full' }}
+        run: |
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
+            "curl -ks https://127.0.0.1:8443/ | grep -q 'OK from nginx behind HAProxy'"
+
+      - name: "Post-check after FULL: SNI via HAProxy → nginx (optional)"
+        if: ${{ inputs.run_mode == 'full' && inputs.test_domain != '' }}
+        env:
+          TEST_DOMAIN: ${{ github.event.inputs.test_domain }}
+        run: |
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
+            "curl -ks --resolve $TEST_DOMAIN:443:127.0.0.1 https://$TEST_DOMAIN/ | head -1"
