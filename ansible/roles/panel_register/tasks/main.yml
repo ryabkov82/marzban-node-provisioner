@@ -1,0 +1,28 @@
+---
+- name: Add node to panel (delegated)
+  ansible.builtin.uri:
+    url: "{{ hostvars['localhost'].panel_url }}/api/node"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ hostvars['localhost'].access_token }}"
+    body_format: json
+    body:
+      name: "{{ inventory_hostname }}"
+      address: >-
+        {{ panel_address
+           | default(hostvars[inventory_hostname].ansible_host
+           | default(inventory_hostname)) }}
+      port: "{{ service_port | default(62050) }}"
+      api_port: "{{ api_port | default(62051) }}"
+      add_as_new_host: "{{ add_as_new_host | default(true) }}"
+      usage_coefficient: "{{ usage_coefficient | default(1.0) }}"
+    return_content: true
+    status_code: [200, 201]
+    validate_certs: "{{ hostvars['localhost'].panel_validate_certs | default(true) }}"
+  register: add_node_result
+  delegate_to: localhost
+
+- name: Show panel response
+  ansible.builtin.debug:
+    var: add_node_result.json
+  delegate_to: localhost

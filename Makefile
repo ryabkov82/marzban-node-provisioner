@@ -1,12 +1,9 @@
-# Makefile for marzban-node-provisioner
+# Makefile for marzban-node-provisioner (with local Python venv)
 # Usage examples:
 #   make help
-#   make deps
-#   make deploy LIMIT=203.0.113.10
-#   make update-only LIMIT=groupname
-#   make deploy-no-update
-#   make script-all
-#   make script-update-only NODE=203.0.113.10
+#   make deps                      # creates .venv and installs ansible/ansible-lint
+#   make ping LIMIT=node1
+#   make proxy-only LIMIT=node1
 #
 # Variables:
 #   INV   - inventory path (default: ansible/inventories/example.ini)
@@ -14,19 +11,17 @@
 #   LIMIT - limit hosts/group (optional)
 #   TAGS  - extra tags for playbook (optional)
 #   EXTRA - extra flags for ansible-playbook (optional, e.g. EXTRA="-vvv")
-#   NODE  - target node for script targets (ip/host); or set in .env
+#   NODE  - target node for script targets (ip/host or SSH alias); or set in .env
 #
-# .env file is supported. Place panel creds and defaults there:
-#   PANEL_URL=https://panel.example.com
-#   PANEL_USERNAME=admin
-#   PANEL_PASSWORD=S3cr3t
-#   PANEL_VERIFY_TLS=true
-#   SSH_USER=root
-#   NODE=203.0.113.10
+# .env file is supported. Place panel creds and defaults there.
+
+# ---- Ansible config and roles path ----
+export ANSIBLE_CONFIG=$(PWD)/ansible.cfg
+export ANSIBLE_ROLES_PATH=$(PWD)/ansible/roles
 
 SHELL := /bin/bash
 .ONESHELL:
-.SHELLFLAGS := -eu -o pipefail -c
+.SHELLFLAGS := -o pipefail -e -u -c
 
 .DEFAULT_GOAL := help
 
@@ -34,68 +29,91 @@ INV ?= ansible/inventories/example.ini
 PLAY ?= ansible/playbooks/provision_node.yml
 ANSIBLE ?= ansible-playbook
 
-# Helper: load .env variables into current shell for a recipe
+# Load .env into shell (so $INV etc. available as shell vars)
 define LOAD_ENV
 set -a; [[ -f .env ]] && source ./.env || true; set +a
 endef
 
 .PHONY: help deps lint ping deploy update-only deploy-no-update list-tasks \
+        haproxy nginx proxy-only \
         script-all script-update-only script-docker-only script-register-only \
         node-logs
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "}; /^[a-zA-Z0-9_.-]+:.*?## / {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-deps: ## Install Ansible and required collections
+deps: ## Use system Ansible; install Galaxy collections from requirements
 	$(LOAD_ENV)
-	python3 -m pip install --upgrade pip
-	pip3 install "ansible==9.*" ansible-lint || true
+	@command -v ansible >/dev/null || { echo "Ansible not found. Install: sudo apt-get update && sudo apt-get install -y ansible"; exit 1; }
+	@ansible --version
 	ansible-galaxy collection install -r ansible/collections/requirements.yml
+	@echo "OK: collections installed."
 
-lint: ## Run ansible-lint on playbooks and roles
+lint: ## Run ansible-lint if available (non-fatal)
 	$(LOAD_ENV)
-	ansible-lint -p || true
+	@if command -v ansible-lint >/dev/null; then ansible-lint -p || true; else echo "ansible-lint not installed; skip"; fi
 
 ping: ## Ansible ping to all/limited hosts
 	$(LOAD_ENV)
-	ansible -i "$(INV)" all -m ansible.builtin.ping $(if $(LIMIT),--limit "$(LIMIT)",)
+	ansible -i "$${INV:-$(INV)}" all -m ansible.builtin.ping $(if $(LIMIT),--limit "$(LIMIT)",)
 
-deploy: ## Full deploy (all plays); uses PANEL_* vars from env/.env
+deploy: ## Full deploy (all plays)
 	$(LOAD_ENV)
-	$(ANSIBLE) -i "$(INV)" "$(PLAY)" \
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(if $(TAGS),--tags "$(TAGS)",) \
 		$(EXTRA)
 
 update-only: ## Only OS update/reboot steps (tags: update,upgrade)
 	$(LOAD_ENV)
-	$(ANSIBLE) -i "$(INV)" "$(PLAY)" \
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		--tags update,upgrade \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
 
 deploy-no-update: ## Deploy everything except OS updates
 	$(LOAD_ENV)
-	$(ANSIBLE) -i "$(INV)" "$(PLAY)" \
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		--skip-tags update,upgrade \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
 
 list-tasks: ## List tasks for the playbook (with optional LIMIT)
 	$(LOAD_ENV)
-	$(ANSIBLE) -i "$(INV)" "$(PLAY)" --list-tasks \
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" --list-tasks \
 		$(if $(LIMIT),--limit "$(LIMIT)",)
 
+# ---------- Proxy-only targets ----------
+haproxy: ## Apply only HAProxy role (--tags haproxy)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags haproxy \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+nginx: ## Apply only nginx role (--tags nginx)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags nginx \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+proxy-only: ## Apply HAProxy + nginx roles (--tags haproxy,nginx)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags haproxy,nginx \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
 # ---------- Script targets (scripts/add-node.sh) ----------
-# Require: PANEL_URL, PANEL_USERNAME, PANEL_PASSWORD, NODE (+ optional SSH_USER).
-# Reads them from .env automatically.
+# Uses PANEL_URL/PANEL_USERNAME/PANEL_PASSWORD and SSH_TARGET or SSH_USER+NODE (from .env or env)
 
 script-all: ## Run scripts/add-node.sh full flow (upgrade+docker+register)
 	$(LOAD_ENV)
 	chmod +x scripts/add-node.sh
 	./scripts/add-node.sh
 
-script-update-only: ## Run only remote OS update via script (skip docker & register)
+script-update-only: ## Run only remote OS update (skip docker & register)
 	$(LOAD_ENV)
 	chmod +x scripts/add-node.sh
 	SKIP_DOCKER=true SKIP_REGISTER=true ./scripts/add-node.sh
@@ -110,8 +128,14 @@ script-register-only: ## Register node in panel only (skip upgrade & docker)
 	chmod +x scripts/add-node.sh
 	SKIP_UPGRADE=true SKIP_DOCKER=true ./scripts/add-node.sh
 
-node-logs: ## Tail marzban-node logs on SSH_TARGET (alias from ~/.ssh/config)
+node-logs: ## Tail marzban-node logs on SSH_TARGET or SSH_USER@NODE
 	$(LOAD_ENV)
-	[[ -n "$${SSH_TARGET:-}" ]] || { echo "Set SSH_TARGET (env or .env)"; exit 1; }
-	ssh -o BatchMode=yes $${SSH_KEY:+-i "$${SSH_KEY}"} "$${SSH_TARGET}" \
-	  'docker logs -f --since=1h marzban-node || true'
+	@if [[ -n "$${SSH_TARGET:-}" ]]; then \
+		ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes $${SSH_KEY:+-i "$${SSH_KEY}"} "$${SSH_TARGET}" \
+		  'docker logs -f --since=1h marzban-node || true'; \
+	elif [[ -n "$${SSH_USER:-}" && -n "$${NODE:-}" ]]; then \
+		ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes $${SSH_KEY:+-i "$${SSH_KEY}"} "$${SSH_USER}@$${NODE}" \
+		  'docker logs -f --since=1h marzban-node || true'; \
+	else \
+		echo "Set SSH_TARGET (recommended) or SSH_USER and NODE (in .env or env)"; exit 1; \
+	fi

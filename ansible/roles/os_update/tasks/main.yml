@@ -1,0 +1,52 @@
+---
+- name: Ensure APT noninteractive defaults
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/99noninteractive
+    mode: "0644"
+    content: |
+      APT::Get::Assume-Yes "true";
+      Dpkg::Options { "--force-confdef"; "--force-confold"; }
+      Dpkg::Use-Pty "0";
+  tags: [update, upgrade]
+
+- name: Make needrestart noninteractive
+  ansible.builtin.copy:
+    dest: /etc/needrestart/conf.d/zzz-ansible.conf
+    mode: "0644"
+    content: |
+      $nrconf{restart} = 'a';
+  tags: [update, upgrade]
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  tags: [update, upgrade]
+
+- name: Dist upgrade
+  ansible.builtin.apt:
+    upgrade: dist
+    force_apt_get: true
+    autoremove: true
+    autoclean: true
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+    NEEDRESTART_MODE: a
+  tags: [update, upgrade]
+
+- name: Check if reboot is required
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: reboot_flag
+  tags: [update, upgrade]
+
+- name: Reboot if needed
+  ansible.builtin.reboot:
+    msg: "Rebooting after kernel/glibc upgrade"
+    connect_timeout: 30
+    reboot_timeout: 900
+    test_command: whoami
+  when: reboot_flag.stat.exists
+  tags: [update, upgrade]

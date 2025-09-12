@@ -1,0 +1,27 @@
+---
+- name: Ensure node dir
+  ansible.builtin.file:
+    path: "{{ ssl_dir | default('/var/lib/marzban-node') }}"
+    state: directory
+    mode: "0755"
+
+- name: Write panel certificate
+  ansible.builtin.copy:
+    content: "{{ hostvars['localhost'].panel_certificate }}"
+    dest: "{{ ssl_dir | default('/var/lib/marzban-node') }}/ssl_client_cert.pem"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Run marzban-node container
+  community.docker.docker_container:
+    name: marzban-node
+    image: "gozargah/marzban-node:latest"
+    state: started
+    restart_policy: always
+    network_mode: host
+    volumes:
+      - "{{ ssl_dir | default('/var/lib/marzban-node') }}:{{ ssl_dir | default('/var/lib/marzban-node') }}"
+    env:
+      SSL_CLIENT_CERT_FILE: "{{ ssl_dir | default('/var/lib/marzban-node') }}/ssl_client_cert.pem"
+      SERVICE_PROTOCOL: "{{ service_protocol | default('rest') }}"

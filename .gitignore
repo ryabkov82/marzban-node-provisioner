@@ -2,3 +2,25 @@
 .env
 .env.*
 !.env.example   # шаблон оставляем в гите
+
+# Игнорировать все ini/yml инвентари, кроме примеров
+ansible/inventories/*.ini
+!ansible/inventories/example.ini
+ansible/inventories/*.yml
+!ansible/inventories/ssh_config.yml
+
+# Python venv
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Ansible/прочее
+.ansible/
+.ansible_async/
+.ansible/tmp/
+.cache/

@@ -1,0 +1,2 @@
+plugin: community.general.ssh_config
+# config_file можно не указывать — по умолчанию ~/.ssh/config

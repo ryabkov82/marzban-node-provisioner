@@ -1,0 +1,33 @@
+---
+- name: Obtain admin token
+  ansible.builtin.uri:
+    url: "{{ panel_url }}/api/admin/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      username: "{{ panel_username }}"
+      password: "{{ panel_password }}"
+      grant_type: password
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ panel_validate_certs | default(true) }}"
+  register: token_resp
+
+- name: Set token fact
+  ansible.builtin.set_fact:
+    access_token: "{{ token_resp.json.access_token }}"
+
+- name: Get node settings (certificate)
+  ansible.builtin.uri:
+    url: "{{ panel_url }}/api/node/settings"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ access_token }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ panel_validate_certs | default(true) }}"
+  register: node_settings
+
+- name: Save panel certificate as fact
+  ansible.builtin.set_fact:
+    panel_certificate: "{{ node_settings.json.certificate }}"
