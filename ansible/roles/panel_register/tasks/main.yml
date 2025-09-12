@@ -12,10 +12,10 @@
         {{ panel_address
            | default(hostvars[inventory_hostname].ansible_host
            | default(inventory_hostname)) }}
-      port: "{{ service_port | default(62050) }}"
-      api_port: "{{ api_port | default(62051) }}"
-      add_as_new_host: "{{ add_as_new_host | default(true) }}"
-      usage_coefficient: "{{ usage_coefficient | default(1.0) }}"
+      port: "{{ service_port | default(62050) | int }}"
+      api_port: "{{ api_port | default(62051) | int }}"
+      add_as_new_host: "{{ add_as_new_host | default(true) | bool }}"
+      usage_coefficient: "{{ usage_coefficient | default(1.0) | float }}"
     return_content: true
     status_code: [200, 201]
     validate_certs: "{{ hostvars['localhost'].panel_validate_certs | default(true) }}"

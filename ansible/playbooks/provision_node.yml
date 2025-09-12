@@ -20,5 +20,9 @@
 - name: Register nodes in panel
   hosts: marzban_nodes
   gather_facts: false
-  roles:
-    - panel_register
+  tasks:
+    - name: "Role: panel_register"
+      ansible.builtin.import_role:
+        name: panel_register
+      tags: [panel_register]
+      when: (panel_register_enabled | default(true)) | bool

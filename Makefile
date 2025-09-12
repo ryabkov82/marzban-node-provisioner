@@ -105,6 +105,26 @@ proxy-only: ## Apply HAProxy + nginx roles (--tags haproxy,nginx)
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
 
+container-only: ## Fetch cert + Docker + marzban-node (skip update/proxy/register)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--skip-tags update,upgrade,haproxy,nginx,panel_register \
+		-e panel_url="$${PANEL_URL}" \
+		-e panel_username="$${PANEL_USERNAME}" \
+		-e panel_password="$${PANEL_PASSWORD}" \
+		-e panel_validate_certs=$${PANEL_VERIFY_TLS:-true} \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+proxy-check: ## Check haproxy/nginx configs, services, ports, SNI
+	$(LOAD_ENV)
+	@host="$${LIMIT:?Set LIMIT=<host> or group}"; \
+	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'haproxy -c -f /etc/haproxy/haproxy.cfg'
+	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'nginx -t'
+	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'systemctl is-active haproxy; systemctl is-active nginx'
+	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
+	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1'
+	
 # ---------- Script targets (scripts/add-node.sh) ----------
 # Uses PANEL_URL/PANEL_USERNAME/PANEL_PASSWORD and SSH_TARGET or SSH_USER+NODE (from .env or env)
 
