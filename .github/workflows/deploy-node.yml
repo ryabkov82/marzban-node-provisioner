@@ -30,23 +30,33 @@ on:
         type: boolean
         default: true
         description: "Verify TLS certs for panel API requests"
+      run_mode:
+        description: "Режим запуска: update_only | proxy_only | full"
+        required: true
+        default: "update_only"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      # ansible.cfg у тебя в КОРНЕ репозитория
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible.cfg
 
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Можно оставить pip, на GitHub Runner это ок
       - name: Install Ansible
         run: |
           python3 -m pip install --upgrade pip
-          pip install ansible==9.5.1
+          pip install ansible==9.5.1 ansible-lint
           ansible --version
 
       - name: Install Ansible collections
         run: ansible-galaxy collection install -r ansible/collections/requirements.yml
 
-      - name: Setup SSH key
+      - name: Setup SSH key (agent)
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
@@ -63,21 +73,49 @@ jobs:
             echo "$line ansible_user=$SSH_USER" >> inventory.ini
             ssh-keyscan -H "$line" >> ~/.ssh/known_hosts 2>/dev/null || true
           done
+          echo "---- inventory.ini ----"
           cat inventory.ini
 
-      - name: Run playbook
+      # ====== РЕЖИМ: ТОЛЬКО ОБНОВЛЕНИЕ ОС ======
+      - name: "Update OS via playbook (tags: update,upgrade)"
+        if: ${{ inputs.run_mode == 'update_only' }}
+        run: |
+          ansible-playbook -i inventory.ini ansible/playbooks/provision_node.yml \
+            --tags update,upgrade -vv
+
+      - name: Sanity check after update (who -b; uptime -s)
+        if: ${{ inputs.run_mode == 'update_only' }}
+        run: |
+          ansible -i inventory.ini marzban_nodes -m shell -a 'who -b; uptime -s'
+
+      # ====== РЕЖИМ: ТОЛЬКО ПРОКСИ (HAProxy + nginx) ======
+      - name: Apply proxy roles only (haproxy,nginx)
+        if: ${{ inputs.run_mode == 'proxy_only' }}
+        run: |
+          ansible-playbook -i inventory.ini ansible/playbooks/provision_node.yml \
+            --tags haproxy,nginx -vv
+
+      # ====== РЕЖИМ: ПОЛНЫЙ ДЕПЛОЙ ======
+      - name: Full deploy (panel + node + proxy + register)
+        if: ${{ inputs.run_mode == 'full' }}
         env:
           PANEL_URL: ${{ secrets.PANEL_URL }}
           PANEL_USERNAME: ${{ secrets.PANEL_USERNAME }}
           PANEL_PASSWORD: ${{ secrets.PANEL_PASSWORD }}
           PANEL_VALIDATE_CERTS: ${{ github.event.inputs.panel_verify_tls }}
+          SERVICE_PORT: ${{ github.event.inputs.service_port }}
+          API_PORT: ${{ github.event.inputs.api_port }}
+          ADD_AS_NEW_HOST: ${{ github.event.inputs.add_as_new_host }}
+          USAGE_COEFFICIENT: ${{ github.event.inputs.usage_coefficient }}
         run: |
+          # Важно: не ставим кавычки вокруг true/false, чтобы Ansible распознал bool
           ansible-playbook -i inventory.ini ansible/playbooks/provision_node.yml \
             -e panel_url="$PANEL_URL" \
             -e panel_username="$PANEL_USERNAME" \
             -e panel_password="$PANEL_PASSWORD" \
-            -e panel_validate_certs="$PANEL_VALIDATE_CERTS" \
-            -e service_port="${{ github.event.inputs.service_port }}" \
-            -e api_port="${{ github.event.inputs.api_port }}" \
-            -e add_as_new_host="${{ github.event.inputs.add_as_new_host }}" \
-            -e usage_coefficient="${{ github.event.inputs.usage_coefficient }}"
+            -e panel_validate_certs=$PANEL_VALIDATE_CERTS \
+            -e service_port=$SERVICE_PORT \
+            -e api_port=$API_PORT \
+            -e add_as_new_host=$ADD_AS_NEW_HOST \
+            -e usage_coefficient=$USAGE_COEFFICIENT \
+            -vv
