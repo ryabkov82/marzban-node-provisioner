@@ -61,20 +61,31 @@ jobs:
         with:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Build dynamic inventory
+      - name: "Build dynamic inventory"
         id: inv
+        shell: bash
         env:
           NODES: ${{ github.event.inputs.nodes }}
           SSH_USER: ${{ github.event.inputs.ssh_user }}
         run: |
+          set -euo pipefail
           echo "[marzban_nodes]" > inventory.ini
-          while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
+          # построчно читаем input "nodes"
+          printf '%s\n' "$NODES" | tr -d '\r' | while IFS= read -r line; do
+            # пропускаем пустые / пробельные строки
+            [[ -z "${line// }" ]] && continue
             echo "$line ansible_user=$SSH_USER" >> inventory.ini
             ssh-keyscan -H "$line" >> ~/.ssh/known_hosts 2>/dev/null || true
           done
+      
           echo "---- inventory.ini ----"
-          cat inventory.ini
+          sed -n '1,200p' inventory.ini
+      
+          # на всякий случай: проверим, что хосты реально есть
+          if ! grep -qv '^\[marzban_nodes\]$' inventory.ini; then
+            echo "ERROR: inventory.ini пустой. Проверьте input 'nodes' в запуске workflow." >&2
+            exit 1
+          fi
 
       # ====== РЕЖИМ: ТОЛЬКО ОБНОВЛЕНИЕ ОС ======
       - name: "Update OS via playbook (tags: update,upgrade)"
