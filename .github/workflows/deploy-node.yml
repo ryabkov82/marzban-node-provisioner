@@ -123,10 +123,11 @@ jobs:
       - name: "TLS post-check: files and subject"
         if: ${{ inputs.run_mode == 'tls_only' }}
         run: |
-          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
-            "ls -l /etc/letsencrypt/live/digitalstreamers.xyz/{fullchain.pem,privkey.pem}; \
-             openssl x509 -in /etc/letsencrypt/live/digitalstreamers.xyz/fullchain.pem -noout -subject | sed -n '1p'"
-
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m command -a \
+            "ls -l /etc/letsencrypt/live/digitalstreamers.xyz/fullchain.pem /etc/letsencrypt/live/digitalstreamers.xyz/privkey.pem"
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m command -a \
+            "openssl x509 -in /etc/letsencrypt/live/digitalstreamers.xyz/fullchain.pem -noout -subject"
+          
       # ───────── режим: ТОЛЬКО ПРОКСИ (HAProxy + nginx) ─────────
       - name: "Apply proxy roles only (tls_sync,haproxy,nginx)"
         if: ${{ inputs.run_mode == 'proxy_only' }}
