@@ -2,6 +2,8 @@
 # Где взять сертификаты (сертификационный мастер) и для какого домена
 cert_master_host: ""                  # ОБЯЗАТЕЛЬНО: SSH-алиас/host мастера
 cert_domain: ""                       # ОБЯЗАТЕЛЬНО: например, digitalstreamers.xyz
+cert_master_user: root
+cert_master_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
 
 # Пути сертификатов на мастере (Let's Encrypt)
 cert_src_dir: "/etc/letsencrypt/live/{{ cert_domain }}"
