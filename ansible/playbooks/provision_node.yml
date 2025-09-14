@@ -6,15 +6,26 @@
   roles:
     - role: panel_api
 
-# Play 2: на узлах — апдейт, Docker, контейнер, прокси
+# Play 2: на узлах — апдейт, TLS, контейнер, прокси
 - name: Provision node
   hosts: marzban_nodes
   become: true
   roles:
+    # апдейты ОС можно запускать выборочно тегами update,upgrade
     - { role: os_update, tags: [update, upgrade] }
-    - marzban_node
-    - haproxy
-    - nginx
+
+    # Синхронизация wildcard-сертификата с cert-master на узел
+    - { role: tls_sync, tags: [tls_sync] }
+
+    # Контейнер узла (при необходимости — берет cert панели из Play 1)
+    - role: marzban_node
+      tags: [marzban_node]
+      # пробросим сертификат панели в роль (если panel_api его получал)
+      panel_certificate: "{{ hostvars['localhost'].panel_certificate | default('') }}"
+
+    # Прокси-слой
+    - { role: haproxy, tags: [haproxy] }
+    - { role: nginx, tags: [nginx] }
 
 # Play 3: регистрация (делегируется на localhost)
 - name: Register nodes in panel

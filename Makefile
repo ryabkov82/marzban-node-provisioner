@@ -116,6 +116,20 @@ container-only: ## Fetch cert + Docker + marzban-node (skip update/proxy/registe
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
 
+tls-only: ## Sync wildcard TLS certs only (role tls_sync)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags tls_sync \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+proxy-with-tls: ## tls_sync + haproxy + nginx (proxy layer with real cert)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags tls_sync,haproxy,nginx \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
 proxy-check: ## Check haproxy/nginx configs, services, ports, SNI
 	$(LOAD_ENV)
 	@host="$${LIMIT:?Set LIMIT=<host> or group}"; \
@@ -159,3 +173,16 @@ node-logs: ## Tail marzban-node logs on SSH_TARGET or SSH_USER@NODE
 	else \
 		echo "Set SSH_TARGET (recommended) or SSH_USER and NODE (in .env or env)"; exit 1; \
 	fi
+
+# --- Script-only: sync TLS cert from cert-master to target -------------------
+script-sync-cert: ## Sync wildcard TLS cert (cert-master -> target) via scripts/add-node.sh (no upgrade/docker/register)
+	$(LOAD_ENV)
+	@command -v bash >/dev/null || { echo "bash not found in PATH"; exit 127; }
+	@[[ -n "$${SSH_TARGET:-}" ]]     || { echo "Set SSH_TARGET (env or .env)"; exit 1; }
+	@[[ -n "$${CERT_DOMAIN:-}" ]]    || { echo "Set CERT_DOMAIN (env or .env)"; exit 1; }
+	@[[ -n "$${CERT_MASTER:-}" ]]    || { echo "Set CERT_MASTER (env or .env)"; exit 1; }
+	@[[ -n "$${SSH_OPTS:-}" ]]       || echo "Tip: define SSH_OPTS or SSH_KEY in .env (using ~/.ssh/id_rsa by default in script)"
+	chmod +x scripts/add-node.sh
+	CERT_SYNC_ENABLE=true CERT_VERIFY=$${CERT_VERIFY:-true} \
+	SKIP_UPGRADE=true SKIP_DOCKER=true SKIP_REGISTER=true \
+	./scripts/add-node.sh	

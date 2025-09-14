@@ -31,13 +31,17 @@ on:
         default: true
         description: "Verify TLS certs for panel API requests"
       run_mode:
-        description: "Режим запуска: update_only | proxy_only | full"
+        description: "Режим запуска: update_only | proxy_only | full | tls_only"
         required: true
-        default: "update_only"
+        default: "full"
       test_domain:
         description: "Домен для SNI-проверки HAProxy→nginx (опционально)"
         required: false
         default: ""
+      cert_master_host:
+        description: "SSH-алиас/host cert-master (источник wildcard)"
+        required: false
+        default: "nl-ams-1"
 
 jobs:
   deploy:
@@ -79,6 +83,10 @@ jobs:
             echo "$line ansible_user=$SSH_USER" >> ansible/inventories/ci.ini
             ssh-keyscan -H "$line" >> ~/.ssh/known_hosts 2>/dev/null || true
           done
+          # Чтобы роль tls_sync не упёрлась в fingerprint cert-master
+          if [[ -n "${{ github.event.inputs.cert_master_host }}" ]]; then
+            ssh-keyscan -H "${{ github.event.inputs.cert_master_host }}" >> ~/.ssh/known_hosts 2>/dev/null || true
+          fi
           echo "---- ansible/inventories/ci.ini ----"
           cat ansible/inventories/ci.ini
 
@@ -102,12 +110,32 @@ jobs:
         run: |
           ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a 'who -b; uptime -s'
 
-      # ───────── режим: ТОЛЬКО ПРОКСИ (HAProxy + nginx) ─────────
-      - name: "Apply proxy roles only (haproxy,nginx)"
-        if: ${{ inputs.run_mode == 'proxy_only' }}
+      # ───────── режим: TLS_ONLY ─────────
+      - name: "TLS sync only (role tls_sync)"
+        if: ${{ inputs.run_mode == 'tls_only' }}
+        env:
+          CERT_MASTER_HOST: ${{ github.event.inputs.cert_master_host }}
         run: |
           ansible-playbook -i ansible/inventories/ci.ini ansible/playbooks/provision_node.yml \
-            --tags haproxy,nginx -vv
+            --tags tls_sync \
+            -e cert_master_host=${CERT_MASTER_HOST} -vv
+
+      - name: "TLS post-check: files and subject"
+        if: ${{ inputs.run_mode == 'tls_only' }}
+        run: |
+          ansible -i ansible/inventories/ci.ini marzban_nodes -m shell -a \
+            "ls -l /etc/letsencrypt/live/digitalstreamers.xyz/{fullchain.pem,privkey.pem}; \
+             openssl x509 -in /etc/letsencrypt/live/digitalstreamers.xyz/fullchain.pem -noout -subject | sed -n '1p'"
+
+      # ───────── режим: ТОЛЬКО ПРОКСИ (HAProxy + nginx) ─────────
+      - name: "Apply proxy roles only (tls_sync,haproxy,nginx)"
+        if: ${{ inputs.run_mode == 'proxy_only' }}
+        env:
+          CERT_MASTER_HOST: ${{ github.event.inputs.cert_master_host }}
+        run: |
+          ansible-playbook -i ansible/inventories/ci.ini ansible/playbooks/provision_node.yml \
+            --tags tls_sync,haproxy,nginx \
+            -e cert_master_host=${CERT_MASTER_HOST} -vv
 
       - name: "Proxy post-check: configs and services"
         if: ${{ inputs.run_mode == 'proxy_only' }}
@@ -151,6 +179,7 @@ jobs:
           API_PORT: ${{ github.event.inputs.api_port }}
           ADD_AS_NEW_HOST: ${{ github.event.inputs.add_as_new_host }}
           USAGE_COEFFICIENT: ${{ github.event.inputs.usage_coefficient }}
+          CERT_MASTER_HOST: ${{ github.event.inputs.cert_master_host }}
         run: |
           ansible-playbook -i ansible/inventories/ci.ini ansible/playbooks/provision_node.yml \
             -e panel_url="$PANEL_URL" \
@@ -161,6 +190,7 @@ jobs:
             -e api_port=$API_PORT \
             -e add_as_new_host=$ADD_AS_NEW_HOST \
             -e usage_coefficient=$USAGE_COEFFICIENT \
+            -e cert_master_host=${CERT_MASTER_HOST} \
             -vv
 
       # Проверки выполняем ПОСЛЕ успешного full deploy
