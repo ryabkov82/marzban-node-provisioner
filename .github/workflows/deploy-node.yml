@@ -41,7 +41,7 @@ on:
       cert_master_host:
         description: "SSH-алиас/host cert-master (источник wildcard)"
         required: false
-        default: "nl-ams-1"
+        default: "109.107.185.238"
 
 jobs:
   deploy:

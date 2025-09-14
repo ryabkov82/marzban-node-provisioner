@@ -3,8 +3,16 @@
 - name: Panel API (local)
   hosts: localhost
   gather_facts: false
+  tags: [panel_api]
+  vars:
+    panel_url: "{{ lookup('env', 'PANEL_URL') }}"
+    panel_username: "{{ lookup('env', 'PANEL_USERNAME') }}"
+    panel_password: "{{ lookup('env', 'PANEL_PASSWORD') }}"
+    panel_validate_certs: "{{ (lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool }}"
   roles:
     - role: panel_api
+      tags: [panel_api]
+
 
 # Play 2: на узлах — апдейт, TLS, контейнер, прокси
 - name: Provision node
@@ -27,13 +35,39 @@
     - { role: haproxy, tags: [haproxy] }
     - { role: nginx, tags: [nginx] }
 
-# Play 3: регистрация (делегируется на localhost)
-- name: Register nodes in panel
-  hosts: marzban_nodes
+# Play 3: регистрация узлов в панели — без повторного логина
+- name: Register Nodes In Panel (Local)
+  hosts: localhost
   gather_facts: false
+  tags: [panel_register]
   tasks:
-    - name: "Role: panel_register"
-      ansible.builtin.import_role:
+    - name: Assert token exists from Play 1
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].panel_api_access_token is defined
+          - hostvars['localhost'].panel_api_access_token | length > 0
+        fail_msg: "panel_api_access_token is missing. Run Play 1 (panel_api) first."
+        quiet: true
+
+    - name: Panel Register | Register each node with existing token
+      ansible.builtin.include_role:
         name: panel_register
+      loop: "{{ groups['marzban_nodes'] | default([]) }}"
+      loop_control: { loop_var: node }
+      vars:
+        # URL/verify берём из фактов Play 1; на всякий случай оставим безопасный fallback к env
+        panel_register_url: "{{ hostvars['localhost'].panel_api_url | default(lookup('env', 'PANEL_URL')) }}"
+        panel_register_validate_certs: >-
+          {{ hostvars['localhost'].panel_api_validate_certs
+            | default((lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool) }}
+        # ключевое: используем УЖЕ полученный токен
+        panel_register_access_token: "{{ hostvars['localhost'].panel_api_access_token }}"
+        # параметры узла (можно переопределять в host_vars)
+        panel_register_node_name: "{{ node }}"
+        panel_register_address: "{{ hostvars[node].ansible_host | default(node) }}"
+        panel_register_service_port: "{{ hostvars[node].service_port | default(62050) }}"
+        panel_register_api_port: "{{ hostvars[node].api_port | default(62051) }}"
+        panel_register_add_as_new_host: "{{ hostvars[node].add_as_new_host | default(true) }}"
+        panel_register_usage_coefficient: "{{ hostvars[node].usage_coefficient | default(1.0) }}"
       tags: [panel_register]
       when: (panel_register_enabled | default(true)) | bool

@@ -15,14 +15,14 @@
 
 - name: Set token fact
   ansible.builtin.set_fact:
-    access_token: "{{ token_resp.json.access_token }}"
+    panel_api_access_token: "{{ token_resp.json.access_token }}"
 
 - name: Get node settings (certificate)
   ansible.builtin.uri:
     url: "{{ panel_url }}/api/node/settings"
     method: GET
     headers:
-      Authorization: "Bearer {{ access_token }}"
+      Authorization: "Bearer {{ panel_api_access_token }}"
     return_content: true
     status_code: 200
     validate_certs: "{{ panel_validate_certs | default(true) }}"

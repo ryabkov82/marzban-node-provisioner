@@ -120,13 +120,18 @@ tls-only: ## Sync wildcard TLS certs only (role tls_sync)
 	$(LOAD_ENV)
 	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		--tags tls_sync \
+		--skip-tags panel_api,panel_register \
+		--limit marzban_nodes \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
+
 
 proxy-with-tls: ## tls_sync + haproxy + nginx (proxy layer with real cert)
 	$(LOAD_ENV)
 	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		--tags tls_sync,haproxy,nginx \
+		--skip-tags panel_api,panel_register \
+		--limit marzban_nodes \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
 

@@ -1,5 +1,5 @@
 ---
-- name: Install nginx and ssl-cert (snakeoil)
+- name: Install nginx and ssl-cert
   ansible.builtin.apt:
     name:
       - nginx

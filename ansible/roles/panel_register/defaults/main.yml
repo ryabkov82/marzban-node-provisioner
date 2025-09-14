@@ -1,0 +1,9 @@
+panel_register_url: ""
+panel_register_validate_certs: true
+panel_register_access_token: ""
+panel_register_service_port: 62050
+panel_register_api_port: 62051
+panel_register_add_as_new_host: true
+panel_register_usage_coefficient: 1.0
+panel_register_node_name: ""
+panel_register_address: ""
