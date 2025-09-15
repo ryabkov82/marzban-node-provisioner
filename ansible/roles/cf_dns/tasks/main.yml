@@ -1,0 +1,29 @@
+---
+- name: Cf DNS | Check Required Inputs
+  ansible.builtin.assert:
+    that:
+      - (cf_dns_api_token | length) > 0
+      - (cf_dns_zone | length) > 0
+      - (cf_dns_records | default(cf_dns_records_default)) | length > 0
+    fail_msg: "cf_dns_api_token, cf_dns_zone и cf_dns_records обязательны"
+
+# нормализуем IP назначения: явный вход > ansible_host > inventory_hostname
+- name: Cf DNS | Determine Target IP
+  ansible.builtin.set_fact:
+    cf_dns_target_ip_resolved: >-
+      {{ cf_dns_target_ip
+         | default(hostvars[inventory_hostname].ansible_host
+         | default(inventory_hostname), true) }}
+
+- name: Cf DNS | Ensure DNS Records
+  community.general.cloudflare_dns:
+    zone: "{{ cf_dns_zone }}"
+    record: "{{ item.name }}"
+    type: "{{ item.type | default('A') }}"
+    value: "{{ (item.value | default('')) | default(cf_dns_target_ip_resolved, true) }}"
+    ttl: "{{ item.ttl | default(cf_dns_ttl) }}"
+    proxied: "{{ item.proxied | default(cf_dns_proxied_default) | bool }}"
+    solo: "{{ item.solo | default(cf_dns_solo_default) | bool }}"
+    api_token: "{{ cf_dns_api_token }}"
+    state: present
+  loop: "{{ cf_dns_records | default(cf_dns_records_default) }}"

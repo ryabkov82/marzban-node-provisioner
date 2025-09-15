@@ -1,0 +1,37 @@
+ansible_host: 45.142.164.36
+
+# если имя и суффикс другие — просто поправь list ниже
+cf_dns_records:
+  - { name: "www",               type: "A", proxied: false }
+  - { name: "site",              type: "A", proxied: false }
+  - { name: "edge-ams-03",       type: "A", proxied: false }
+  - { name: "cache-ams-03",      type: "A", proxied: false }
+  - { name: "segment-ams-03",    type: "A", proxied: false }
+  - { name: "stream-ams-03",     type: "A", proxied: false }
+
+panel_register_node_name: "edge-ams-03"
+panel_register_address: "edge-ams-03.digitalstreamers.xyz"
+
+# Host Settings
+panel_register_hosts_port: 443
+panel_register_hosts_sni: "edge-ams-03.digitalstreamers.xyz"
+panel_register_hosts_host: "edge-ams-03.digitalstreamers.xyz"
+# Host Settings применяем только к реальному тегу инбаунда
+panel_register_hosts_inbound_tags:
+  - "VLESS TCP REALITY"
+
+# REALITY правим тоже по реальному тегу
+panel_register_reality_inbound_tag: "VLESS TCP REALITY"
+# или
+# panel_register_reality_inbound_tags:
+#   - "vless-reality"
+
+# что добавить в serverNames
+panel_register_reality_servername: "edge-ams-03.digitalstreamers.xyz"
+panel_register_reality_extra_names:
+  - "edge-ams-03.digitalstreamers.xyz"
+  - "stream-ams-03.digitalstreamers.xyz"
+  - "cache-ams-03.digitalstreamers.xyz"
+  - "segment-ams-03.digitalstreamers.xyz"
+# (опционально) приоритетный SNI, если нужен первый в списке
+panel_register_hosts_sni_preferred: ""  

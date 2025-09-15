@@ -1,0 +1,13 @@
+---
+# Cloudflare auth / zone
+cf_dns_purge_ip_api_token: ""            # Token (Zone:Read + DNS:Edit)
+cf_dns_purge_ip_zone: "digitalstreamers.xyz"
+cf_dns_purge_ip_zone_id: ""              # Если задано — используем напрямую
+
+# Target
+cf_dns_purge_ip_target_ip: ""            # Какой IP чистим
+cf_dns_purge_ip_confirm: false           # Страховка от случайного запуска
+
+# Опционально
+cf_dns_purge_ip_types: []                # [] = все типы; иначе, например, ['A','AAAA']
+cf_dns_purge_ip_page_size: 100           # CF API limit = 100

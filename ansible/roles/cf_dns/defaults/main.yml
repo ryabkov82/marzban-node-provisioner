@@ -1,0 +1,16 @@
+---
+cf_dns_zone: "digitalstreamers.xyz"          # твой корневой домен (зона)
+cf_dns_api_token: ""                         # токен Cloudflare (лучше из env/Secrets)
+cf_dns_ttl: 1                                # 1 = Auto в Cloudflare
+cf_dns_proxied_default: false                # оранжевая тучка по умолчанию
+cf_dns_solo_default: false                   # «единственная» запись данного имени/типа
+
+# Список записей. По умолчанию — как ты просил под новый сервер.
+# value пустой: возьмём cf_target_ip (IP узла).
+cf_dns_records_default:
+  - { name: "www", type: "A", value: "", proxied: true }
+  - { name: "site", type: "A", value: "", proxied: true }
+  - { name: "edge-ams-xx", type: "A", value: "", proxied: true }
+  - { name: "cache-ams-xx", type: "A", value: "", proxied: true }
+  - { name: "segment-ams-xx", type: "A", value: "", proxied: true }
+  - { name: "stream-ams-xx", type: "A", value: "", proxied: true }

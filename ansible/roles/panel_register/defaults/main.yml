@@ -1,9 +1,38 @@
-panel_register_url: ""
-panel_register_validate_certs: true
+---
+# === Panel API (можно переопределить env-переменными) ===
+panel_register_url: >-
+  {{ lookup('env', 'PANEL_URL') | default('', true) }}
+panel_register_validate_certs: >-
+  {{ (lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool }}
+
+# Если хотите передать токен явно — можно сюда; иначе берём из hostvars['localhost']
 panel_register_access_token: ""
+
+# === Node (как запишем узел в панель) ===
+panel_register_node_name: "{{ inventory_hostname }}"
+panel_register_address: >-
+  {{ hostvars[inventory_hostname].ansible_host | default(inventory_hostname) }}
 panel_register_service_port: 62050
 panel_register_api_port: 62051
-panel_register_add_as_new_host: true
+panel_register_add_as_new_host: false
 panel_register_usage_coefficient: 1.0
-panel_register_node_name: ""
-panel_register_address: ""
+
+# === Host Settings (пер-узловые настройки инбаундов) ===
+# Список тегов инбаундов, к которым применяем оверрайд; если пусто — ко всем.
+panel_register_hosts_inbound_tags: []
+
+# Что прописываем в Host Settings для узла
+panel_register_hosts_port: 443
+panel_register_hosts_sni: "{{ panel_register_address }}"
+panel_register_hosts_host: "{{ panel_register_hosts_sni }}"
+panel_register_hosts_security: "tls"
+# Необязательно:
+panel_register_hosts_alpn: ""
+panel_register_hosts_fingerprint: ""
+
+# === REALITY: какой inbound(ы) патчим и какое имя добавляем в serverNames ===
+# Укажите либо одиночный тег, либо список; хотя бы один должен быть задан.
+panel_register_reality_inbound_tag: ""
+panel_register_reality_inbound_tags: []
+panel_register_reality_servername: "{{ panel_register_hosts_sni }}"
+panel_register_hosts_sni_preferred: ""

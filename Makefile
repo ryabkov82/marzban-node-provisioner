@@ -143,7 +143,51 @@ proxy-check: ## Check haproxy/nginx configs, services, ports, SNI
 	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'systemctl is-active haproxy; systemctl is-active nginx'
 	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
 	ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1'
+
+# Регистрируем конкретный узел из инвентаря
+# make panel-register LIMIT=nl-ams-3
+panel-register: ## Register node in panel + Host Settings + REALITY (use LIMIT=<host>)
+	$(LOAD_ENV)
+	if [ -n "$(LIMIT)" ]; then lim="--limit $(LIMIT),localhost"; else lim="--limit localhost"; fi; \
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" --tags panel_api,panel_register $$lim
 	
+dns-apply: ## Create/update Cloudflare DNS records (use LIMIT=<host|group>)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags dns \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+dns-plan: ## Dry-run DNS (check mode)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags dns --check --diff \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
+# make dns-purge-ip PURGE_IP=45.142.164.36
+# dry-run (посмотреть, что удалит): добавь --check
+# make dns-purge-ip PURGE_IP=45.142.164.36 EXTRA="--check --diff"
+dns-purge-ip: ## Remove ALL Cloudflare DNS records that point to PURGE_IP (require PURGE_IP)
+	$(LOAD_ENV)
+	@test -n "$${PURGE_IP:-}" || { echo "Set PURGE_IP=<ip>"; exit 1; }
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags dns_purge_ip \
+		-e cf_dns_purge_ip_target_ip="$${PURGE_IP}" \
+		-e cf_dns_purge_ip_confirm=true \
+		$(EXTRA)
+
+# Добавление узла в задачу обновления сертификатов
+# ansible-playbook -i ansible/inventories/prod.ini ansible/playbooks/provision_node.yml --tags cert_enroll --limit nl-ams-3 -vv
+# Удаление узла из задачи обновления сертификатов
+# make cert-master-remove LIMIT=nl-ams-3
+cert-master-remove: ## Remove node from cert-master (SERVERS_FILE + revoke key). Use LIMIT=<host>
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags cert_master_remove \
+		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$(EXTRA)
+
 # ---------- Script targets (scripts/add-node.sh) ----------
 # Uses PANEL_URL/PANEL_USERNAME/PANEL_PASSWORD and SSH_TARGET or SSH_USER+NODE (from .env or env)
 

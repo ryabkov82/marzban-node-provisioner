@@ -22,6 +22,9 @@
     # апдейты ОС можно запускать выборочно тегами update,upgrade
     - { role: os_update, tags: [update, upgrade] }
 
+    # добавление узла в задачу обновления сертификатов на cert-master
+    - { role: cert_master_enroll, tags: [cert_enroll] }
+
     # Синхронизация wildcard-сертификата с cert-master на узел
     - { role: tls_sync, tags: [tls_sync] }
 
@@ -35,39 +38,77 @@
     - { role: haproxy, tags: [haproxy] }
     - { role: nginx, tags: [nginx] }
 
-# Play 3: регистрация узлов в панели — без повторного логина
-- name: Register Nodes In Panel (Local)
-  hosts: localhost
+# Play 3: регистрация узлов в панели (роль видит host_vars узла)
+- name: Register Nodes In Panel
+  hosts: marzban_nodes
   gather_facts: false
   tags: [panel_register]
-  tasks:
+  pre_tasks:
     - name: Assert token exists from Play 1
+      delegate_to: localhost
       ansible.builtin.assert:
         that:
           - hostvars['localhost'].panel_api_access_token is defined
           - hostvars['localhost'].panel_api_access_token | length > 0
-        fail_msg: "panel_api_access_token is missing. Run Play 1 (panel_api) first."
-        quiet: true
-
-    - name: Panel Register | Register each node with existing token
-      ansible.builtin.include_role:
-        name: panel_register
-      loop: "{{ groups['marzban_nodes'] | default([]) }}"
-      loop_control: { loop_var: node }
-      vars:
-        # URL/verify берём из фактов Play 1; на всякий случай оставим безопасный fallback к env
-        panel_register_url: "{{ hostvars['localhost'].panel_api_url | default(lookup('env', 'PANEL_URL')) }}"
-        panel_register_validate_certs: >-
-          {{ hostvars['localhost'].panel_api_validate_certs
-            | default((lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool) }}
-        # ключевое: используем УЖЕ полученный токен
-        panel_register_access_token: "{{ hostvars['localhost'].panel_api_access_token }}"
-        # параметры узла (можно переопределять в host_vars)
-        panel_register_node_name: "{{ node }}"
-        panel_register_address: "{{ hostvars[node].ansible_host | default(node) }}"
-        panel_register_service_port: "{{ hostvars[node].service_port | default(62050) }}"
-        panel_register_api_port: "{{ hostvars[node].api_port | default(62051) }}"
-        panel_register_add_as_new_host: "{{ hostvars[node].add_as_new_host | default(true) }}"
-        panel_register_usage_coefficient: "{{ hostvars[node].usage_coefficient | default(1.0) }}"
+        fail_msg: >-
+          panel_api_access_token is missing. Run Play 1 (panel_api) first
+          or export PANEL_* env vars.
+  vars:
+    # URL/verify и токен берём из Play 1 (localhost), с безопасным fallback к env
+    panel_register_url: >-
+      {{ hostvars['localhost'].panel_api_url
+         | default(lookup('env', 'PANEL_URL')) }}
+    panel_register_validate_certs: >-
+      {{ hostvars['localhost'].panel_api_validate_certs
+         | default((lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool) }}
+    panel_register_access_token: >-
+      {{ hostvars['localhost'].panel_api_access_token
+         | default(lookup('env', 'PANEL_ACCESS_TOKEN') | default('')) }}
+  roles:
+    - role: panel_register
       tags: [panel_register]
-      when: (panel_register_enabled | default(true)) | bool
+
+# Play 4: Регистрация DNS-записей
+- name: Cloudflare DNS (Delegated)
+  hosts: marzban_nodes
+  gather_facts: false
+  tags: [dns]
+  tasks:
+    - name: DNS | Apply records for this node (delegated to localhost)
+      ansible.builtin.include_role:
+        name: cf_dns
+        apply:
+          delegate_to: localhost
+      vars:
+        cf_dns_api_token: "{{ lookup('env', 'CF_API_TOKEN') }}"
+        cf_dns_zone: "{{ lookup('env', 'CF_ZONE') | default('digitalstreamers.xyz') }}"
+        cf_dns_target_ip: "{{ ansible_host | default(inventory_hostname) }}"
+
+# Play 5: Удаление DNS-записей
+- name: Cloudflare DNS Purge By IP (Local)
+  hosts: localhost
+  gather_facts: false
+  tags: [never, dns_purge_ip]     # выполнится только с --tags dns_purge_ip
+  tasks:
+    - name: DNS Purge | Remove all records by IP
+      ansible.builtin.include_role:
+        name: cf_dns_purge_ip
+      vars:
+        cf_dns_purge_ip_api_token: "{{ lookup('env', 'CF_API_TOKEN') }}"
+        cf_dns_purge_ip_zone: "{{ lookup('env', 'CF_ZONE') | default('digitalstreamers.xyz') }}"
+        cf_dns_purge_ip_zone_id: "{{ lookup('env', 'CF_ZONE_ID') | default('') }}"
+        cf_dns_purge_ip_target_ip: "{{ lookup('env', 'PURGE_IP') | default('') }}"
+        cf_dns_purge_ip_confirm: "{{ (lookup('env', 'DNS_PURGE_CONFIRM') | default('false')) | bool }}"
+        # cf_dns_purge_ip_types: ['A','AAAA']  # при желании ограничить типы
+
+# Play 6: Удаление узла из задачи обновления сертификатов на cert-master
+- name: Cert Master Unenroll
+  hosts: marzban_nodes
+  become: true
+  tags: [never, cert_master_remove]
+  tasks:
+    - name: Cert Master | Unenroll node from cert-master
+      ansible.builtin.include_role:
+        name: cert_master_enroll
+      vars:
+        cert_master_enroll_state: absent

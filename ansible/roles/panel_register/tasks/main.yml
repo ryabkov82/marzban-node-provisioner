@@ -1,23 +1,103 @@
 ---
-- name: Add node to panel (delegated)
+# Все вызовы API делаем на localhost; токен берём из Play 1 (role panel_api)
+# или из panel_register_access_token, если он задан явно.
+
+- name: Panel | Resolve Access Token
+  ansible.builtin.set_fact:
+    _panel_token: >-
+      {{
+        (panel_register_access_token | default('') | string) |
+        ternary(panel_register_access_token,
+                hostvars['localhost'].panel_api_access_token | default(''))
+      }}
+  delegate_to: localhost
+
+- name: Panel | Assert Required Inputs
+  ansible.builtin.assert:
+    that:
+      - (panel_register_url | length) > 0
+      - (_panel_token | length) > 0
+    fail_msg: "panel_register_url or access token is missing."
+  delegate_to: localhost
+
+# === 1) Создать узел, либо подобрать существующий (409) и продолжить ===
+- name: Node | Create or fetch existing (POST /api/node, allow 409)
   ansible.builtin.uri:
     url: "{{ panel_register_url }}/api/node"
     method: POST
     headers:
-      Authorization: "Bearer {{ panel_register_access_token }}"
+      Authorization: "Bearer {{ _panel_token }}"
     body_format: json
     body:
-      name: "{{ (panel_register_node_name | default('')) or inventory_hostname }}"
-      address: >-
-        {{
-          (panel_register_address | default('')) or
-          (hostvars[inventory_hostname].ansible_host | default(inventory_hostname))
-        }}
+      name: "{{ panel_register_node_name }}"
+      address: "{{ panel_register_address }}"
       port: "{{ panel_register_service_port }}"
       api_port: "{{ panel_register_api_port }}"
-      add_as_new_host: "{{ panel_register_add_as_new_host | bool }}"
-      usage_coefficient: "{{ panel_register_usage_coefficient | float }}"
+      add_as_new_host: "{{ panel_register_add_as_new_host }}"
+      usage_coefficient: "{{ panel_register_usage_coefficient }}"
+    status_code: [200, 201, 409]
+    validate_certs: "{{ panel_register_validate_certs }}"
     return_content: true
-    status_code: [200, 201]
-    validate_certs: "{{ panel_register_validate_certs | bool }}"
+  register: _node_post
   delegate_to: localhost
+  changed_when: _node_post.status in [200, 201]
+  failed_when: _node_post.status not in [200, 201, 409]
+
+- name: Node | Resolve node_id after POST/409
+  delegate_to: localhost
+  block:
+    - name: Node | If created now — take id from response
+      ansible.builtin.set_fact:
+        _node_id: "{{ _node_post.json.id | default('') }}"
+      when: _node_post.status in [200, 201]
+
+    - name: Node | If exists (409) — list nodes and find by name
+      when: _node_post.status == 409
+      ansible.builtin.uri:
+        url: "{{ panel_register_url }}/api/nodes"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _panel_token }}"
+        validate_certs: "{{ panel_register_validate_certs }}"
+        status_code: 200
+        return_content: true
+      register: _nodes
+
+    - name: Node | Set node_id fact (existing)
+      when: _node_post.status == 409
+      ansible.builtin.set_fact:
+        _node_id: >-
+          {{ (_nodes.json | selectattr('name', '==', panel_register_node_name)
+            | map(attribute='id') | list | first) | default(omit) }}
+
+    - name: Node | Assert node_id resolved
+      ansible.builtin.assert:
+        that: _node_id | length > 0
+        fail_msg: "Could not resolve node_id for {{ panel_register_node_name }} after 409."
+
+- name: Node | Ensure name/address match desired (PUT /api/node/{id})
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/node/{{ _node_id }}"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _panel_token }}"
+    body_format: json
+    body:
+      name: "{{ panel_register_node_name }}"
+      address: "{{ panel_register_address }}"
+    status_code: 200
+    validate_certs: "{{ panel_register_validate_certs }}"
+    return_content: true
+  register: _node_put
+  delegate_to: localhost
+  changed_when: _node_put.status == 200
+
+# при желании можно добавить PUT /api/node/{{id}}, если нужно переименовать уже созданный узел
+
+# === 2) Host Settings: порт 443 и SNI/FQDN ===
+- name: Hosts | Include override (port/SNI via Host Settings)
+  ansible.builtin.import_tasks: override_hosts.yml
+
+# === 3) REALITY: добавить serverNames += FQDN для выбранных inbound'ов ===
+- name: Reality | Include override (serverNames patch)
+  ansible.builtin.import_tasks: override_reality.yml

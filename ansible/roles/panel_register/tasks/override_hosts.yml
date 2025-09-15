@@ -1,0 +1,183 @@
+---
+# Требования:
+# - panel_register_url
+# - panel_register_validate_certs (bool)
+# - _panel_token                (должен быть установлен ранее в роли)
+# - panel_register_node_name
+# - panel_register_address      (FQDN/адрес узла)
+# - panel_register_hosts_port
+# - panel_register_hosts_sni
+# - panel_register_hosts_host
+# - panel_register_hosts_security
+# - panel_register_hosts_alpn           (опционально, строка)
+# - panel_register_hosts_fingerprint    (опционально, строка)
+# - panel_register_hosts_inbound_tags   (список тегов; если пусто — применяем ко всем)
+
+- name: Hosts | Assert Required Inputs
+  ansible.builtin.assert:
+    that:
+      - (panel_register_url | length) > 0
+      - (_panel_token | length) > 0
+      - (panel_register_node_name | length) > 0
+      - (panel_register_address | length) > 0
+    fail_msg: >-
+      Required variables are missing: panel_register_url/_panel_token/
+      panel_register_node_name/panel_register_address.
+
+- name: Hosts | GET /api/inbounds
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/inbounds"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _panel_token }}"
+    return_content: true
+    validate_certs: "{{ panel_register_validate_certs }}"
+    status_code: 200
+  register: _inbounds
+  delegate_to: localhost
+
+- name: Hosts | GET /api/hosts (current)
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/hosts"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _panel_token }}"
+    return_content: true
+    validate_certs: "{{ panel_register_validate_certs }}"
+    status_code: 200
+  register: _hosts_cur
+  delegate_to: localhost
+
+- name: Hosts | Derive keys from /api/hosts
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _avail_from_hosts: >-
+      {{
+        (_hosts_cur.json | default({}))
+        | dict2items | map(attribute='key') | list
+      }}
+
+- name: Hosts | Derive tags from /api/inbounds
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _avail_from_inbounds: >-
+      {{
+        (_inbounds.json is mapping)
+        | ternary(
+            (_inbounds.json.keys() | list),
+            ((_inbounds.json | default([])) | map(attribute='tag') | list)
+          )
+      }}
+
+- name: Hosts | Choose available keys to use
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _available_tags: >-
+      {{
+        (_avail_from_hosts | length > 0)
+        | ternary(_avail_from_hosts, _avail_from_inbounds)
+      }}
+
+- name: Hosts | Resolve requested tags
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _requested_tags: >-
+      {{
+        (panel_register_hosts_inbound_tags | default([]))
+          | ternary(panel_register_hosts_inbound_tags, _available_tags)
+      }}
+
+- name: Hosts | Compute effective & missing
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _host_inbound_tags: "{{ _requested_tags | intersect(_available_tags) }}"
+    _missing_tags: "{{ _requested_tags | difference(_available_tags) }}"
+
+- name: Hosts | Fail on missing tags
+  when: _missing_tags | length > 0
+  delegate_to: localhost
+  ansible.builtin.fail:
+    msg: >-
+      Requested inbound keys are not present in /api/hosts: {{ _missing_tags }}.
+      Available keys: {{ _available_tags }}
+
+- name: Hosts | Determine Node Address
+  ansible.builtin.set_fact:
+    _node_addr: "{{ panel_register_address }}"
+  delegate_to: localhost
+
+- name: Hosts | Build SNI candidate list
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _sni_candidates: >-
+      {{
+        ((panel_register_hosts_sni_preferred | default('')) | length > 0)
+          | ternary([panel_register_hosts_sni_preferred], [])
+        + [panel_register_address]
+        + (panel_register_reality_extra_names | default([]))
+      }}
+
+- name: Hosts | Build SNI CSV (comma-separated)
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _sni_csv: "{{ (_sni_candidates | reject('equalto','') | list | unique) | join(',') }}"
+
+- name: Hosts | Compose host object for this node
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _host_obj: >-
+      {{
+        {
+          'address': panel_register_address,
+          'host': (panel_register_hosts_host | default(panel_register_address)),
+          'port': (panel_register_hosts_port | default(443)),
+          'remark': (panel_register_hosts_remark | default(inventory_hostname)),
+          'security': (panel_register_hosts_security | default('tls')),
+          'sni': _sni_csv
+        }
+      }}
+
+- name: Hosts | Build New Hosts Payload (Only Effective Tags)
+  ansible.builtin.set_fact:
+    _hosts_payload: >-
+      {{
+        (_hosts_payload | default(_hosts_cur.json | default({})))
+        | combine(
+            {
+              item: (
+                (
+                  (_hosts_payload | default(_hosts_cur.json | default({})))
+                    .get(item, [])
+                    | rejectattr('address', 'equalto', _node_addr) | list
+                ) + [_host_obj]
+              )
+            },
+            recursive=true
+          )
+      }}
+  loop: "{{ _host_inbound_tags }}"
+  delegate_to: localhost
+
+- name: Hosts | Sanitize Payload Keys (Keep Only Existing Inbounds)
+  ansible.builtin.set_fact:
+    _hosts_payload_sanitized: >-
+      {{
+        dict(
+          (_hosts_payload | default({})).items()
+          | selectattr('0', 'in', _available_tags)
+        )
+      }}
+  delegate_to: localhost
+
+- name: Hosts | PUT /api/hosts (Apply)
+  when: _hosts_payload_sanitized is defined and (_hosts_payload_sanitized | length) > 0
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/hosts"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _panel_token }}"
+    body_format: json
+    body: "{{ _hosts_payload_sanitized }}"
+    validate_certs: "{{ panel_register_validate_certs }}"
+    status_code: 200
+  delegate_to: localhost

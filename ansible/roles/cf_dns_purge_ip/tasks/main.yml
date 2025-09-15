@@ -1,0 +1,99 @@
+---
+- name: Cf Purge IP | Check Required Inputs
+  ansible.builtin.assert:
+    that:
+      - (cf_dns_purge_ip_api_token | length) > 0
+      - ((cf_dns_purge_ip_zone | length) > 0) or ((cf_dns_purge_ip_zone_id | length) > 0)
+      - (cf_dns_purge_ip_target_ip | length) > 0
+      - cf_dns_purge_ip_confirm | bool
+    fail_msg: "Need api_token, zone/zone_id, target_ip and cf_dns_purge_ip_confirm=true"
+
+# Получаем zone_id по имени, если не задан
+- name: Cf Purge IP | Resolve Zone ID (If Missing)
+  when: cf_dns_purge_ip_zone_id | length == 0
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/zones?name={{ cf_dns_purge_ip_zone }}"
+    headers:
+      Authorization: "Bearer {{ cf_dns_purge_ip_api_token }}"
+      Content-Type: "application/json"
+    return_content: true
+    status_code: 200
+  register: _zones
+
+- name: Cf Purge IP | Set Zone ID Fact
+  when: cf_dns_purge_ip_zone_id | length == 0
+  ansible.builtin.set_fact:
+    cf_dns_purge_ip_zone_id_resolved: "{{ (_zones.json.result | first).id | default('') }}"
+
+- name: Cf Purge IP | Assert Zone ID Found
+  when: cf_dns_purge_ip_zone_id | length == 0
+  ansible.builtin.assert:
+    that: cf_dns_purge_ip_zone_id_resolved | length > 0
+    fail_msg: "Zone ID not found for zone={{ cf_dns_purge_ip_zone }}"
+
+- name: Cf Purge IP | Normalize Zone ID
+  ansible.builtin.set_fact:
+    cf_dns_purge_ip_zone_id_final: >-
+      {{ (cf_dns_purge_ip_zone_id | length > 0)
+         | ternary(cf_dns_purge_ip_zone_id, cf_dns_purge_ip_zone_id_resolved) }}
+
+# === Сбор записей для удаления ===
+# Конкретные типы
+- name: Cf Purge IP | Query Records By Content + Type
+  when: (cf_dns_purge_ip_types | length) > 0
+  ansible.builtin.uri:
+    url: "{{ 'https://api.cloudflare.com/client/v4/zones/' ~ cf_dns_purge_ip_zone_id_final ~
+             '/dns_records?content=' ~ (cf_dns_purge_ip_target_ip | urlencode) ~
+             '&type=' ~ (item | urlencode) ~
+             '&per_page=' ~ (cf_dns_purge_ip_page_size | string) }}"
+    headers:
+      Authorization: "Bearer {{ cf_dns_purge_ip_api_token }}"
+      Content-Type: "application/json"
+    return_content: true
+    status_code: 200
+  loop: "{{ cf_dns_purge_ip_types }}"
+  register: _lists_by_type
+
+- name: Cf Purge IP | Merge Records (By Type)
+  when: (cf_dns_purge_ip_types | length) > 0
+  ansible.builtin.set_fact:
+    cf_dns_purge_ip_records: >-
+      {{ (_lists_by_type.results | map(attribute='json.result') | list) | sum(start=[]) }}
+
+# Все типы
+- name: Cf Purge IP | Query Records By Content (All Types)
+  when: (cf_dns_purge_ip_types | length) == 0
+  ansible.builtin.uri:
+    url: "{{ 'https://api.cloudflare.com/client/v4/zones/' ~ cf_dns_purge_ip_zone_id_final ~
+             '/dns_records?content=' ~ (cf_dns_purge_ip_target_ip | urlencode) ~
+             '&per_page=' ~ (cf_dns_purge_ip_page_size | string) }}"
+    headers:
+      Authorization: "Bearer {{ cf_dns_purge_ip_api_token }}"
+      Content-Type: "application/json"
+    return_content: true
+    status_code: 200
+  register: _list_all
+
+- name: Cf Purge IP | Set Records (All Types)
+  when: (cf_dns_purge_ip_types | length) == 0
+  ansible.builtin.set_fact:
+    cf_dns_purge_ip_records: "{{ _list_all.json.result | default([]) }}"
+
+- name: Cf Purge IP | Debug What Will Be Deleted
+  ansible.builtin.debug:
+    msg: >-
+      Deleting {{ cf_dns_purge_ip_records | length }} record(s) with content={{ cf_dns_purge_ip_target_ip }}:
+      {{ cf_dns_purge_ip_records | map(attribute='name') | list }}
+
+# === Удаление по record_id ===
+- name: Cf Purge IP | Delete Records By ID
+  when: (cf_dns_purge_ip_records | length) > 0
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/zones/{{ cf_dns_purge_ip_zone_id_final }}/dns_records/{{ item.id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ cf_dns_purge_ip_api_token }}"
+      Content-Type: "application/json"
+    status_code: 200
+    return_content: true
+  loop: "{{ cf_dns_purge_ip_records }}"

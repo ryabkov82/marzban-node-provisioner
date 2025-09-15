@@ -1,0 +1,206 @@
+---
+# Требуется от play/роли:
+# - panel_register_url
+# - panel_register_validate_certs (bool)
+# - (_panel_token | panel_register_access_token | $PANEL_ACCESS_TOKEN)
+# - panel_register_reality_inbound_tag     # точный tag, например: "VLESS TCP REALITY"
+# - panel_register_address                 # FQDN для добавления в serverNames
+# - panel_register_reality_extra_names     # список доп. FQDN (может быть пустым)
+
+- name: Reality | Assert Required Inputs
+  delegate_to: localhost
+  ansible.builtin.assert:
+    that:
+      - (panel_register_url | length) > 0
+      - (panel_register_reality_inbound_tag | length) > 0
+      - (panel_register_address | length) > 0
+    fail_msg: >-
+      Missing required vars: panel_register_url/panel_register_reality_inbound_tag/
+      panel_register_address.
+
+# Выберем рабочий токен из нескольких возможных мест
+- name: Reality | Pick Effective Token
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _panel_effective_token: >-
+      {{
+        _panel_token
+          | default(panel_register_access_token
+          | default(lookup('env', 'PANEL_ACCESS_TOKEN')
+          | default('')))
+      }}
+
+- name: Reality | Assert Token Present
+  delegate_to: localhost
+  ansible.builtin.assert:
+    that:
+      - (_panel_effective_token | length) > 0
+    fail_msg: >-
+      Panel API token is missing. Provide _panel_token or panel_register_access_token
+      (or env PANEL_ACCESS_TOKEN).
+
+# === Всегда работаем через /api/core/config ==================================
+
+- name: Reality | GET /api/core/config
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/core/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _panel_effective_token }}"
+    return_content: true
+    validate_certs: "{{ panel_register_validate_certs }}"
+    status_code: 200
+  register: _core_cfg
+
+- name: Reality | Extract Inbounds From Core Config
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_inbounds: "{{ _core_cfg.json.inbounds | default([]) }}"
+
+- name: Reality | Collect All Inbound Tags
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _all_tags: "{{ _core_inbounds | map(attribute='tag') | list | unique }}"
+
+- name: Reality | Assert Requested Tag Exists
+  when: panel_register_reality_inbound_tag not in _all_tags
+  delegate_to: localhost
+  ansible.builtin.fail:
+    msg: >-
+      Inbound tag '{{ panel_register_reality_inbound_tag }}' not found in /api/core/config.
+      Available tags: {{ _all_tags }}
+
+- name: Reality | Pick Inbound By Tag
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_inb_obj: >-
+      {{
+        (_core_inbounds
+          | selectattr('tag','equalto', panel_register_reality_inbound_tag)
+          | list | first)
+      }}
+
+# Извлечём streamSettings/realitySettings (camel и/или snake)
+- name: Reality | Extract Stream/Reality
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_stream: "{{ _core_inb_obj.streamSettings | default(_core_inb_obj.stream_settings | default({})) }}"
+    _core_reality: "{{ _core_stream.realitySettings | default(_core_stream.reality_settings | default({})) }}"
+
+- name: Reality | Assert REALITY Structure Present
+  delegate_to: localhost
+  ansible.builtin.assert:
+    that:
+      - _core_stream | length > 0
+    fail_msg: >-
+      Inbound '{{ panel_register_reality_inbound_tag }}' has no streamSettings/realitySettings
+      in /api/core/config. Is it a REALITY-enabled inbound?
+
+# Точно достанем serverNames по пути (JMESPath), затем нормализуем к списку
+- name: Reality | Query Current serverNames (JMESPath)
+  delegate_to: localhost
+  vars:
+    _q_camel: >-
+      [?tag=='{{ panel_register_reality_inbound_tag }}']
+      .streamSettings.realitySettings.serverNames | [0]
+    _q_snake: >-
+      [?tag=='{{ panel_register_reality_inbound_tag }}']
+      .stream_settings.reality_settings.server_names | [0]
+  ansible.builtin.set_fact:
+    _core_server_names_raw: >-
+      {{
+        (_core_cfg.json.inbounds | default([]) | json_query(_q_camel))
+        | default(_core_cfg.json.inbounds | default([]) | json_query(_q_snake))
+        | default([])
+      }}
+
+- name: Reality | Normalize serverNames To List
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_server_names: >-
+      {{
+        (_core_server_names_raw is string)
+          | ternary([_core_server_names_raw],
+                    ((_core_server_names_raw is sequence) | ternary(_core_server_names_raw, [])))
+      }}
+
+# Список доменов для добавления: основной адрес + доп. имена
+- name: Reality | Build Names To Add
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _names_to_add: >-
+      {{ [panel_register_address] + (panel_register_reality_extra_names | default([])) }}
+
+- name: Reality | Merge Existing + New (Unique)
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_server_names_new: "{{ (_core_server_names + _names_to_add) | unique }}"
+
+# Собираем обратно (camelCase ключи)
+- name: Reality | Build Patched Stream
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_stream_patched: >-
+      {{
+        _core_stream
+        | combine(
+            { 'realitySettings':
+                (_core_reality
+                 | combine({'serverNames': _core_server_names_new}, recursive=true)
+                )
+            },
+            recursive=true
+          )
+      }}
+
+- name: Reality | Build Patched Inbound
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_inb_patched: >-
+      {{ _core_inb_obj | combine({'streamSettings': _core_stream_patched}, recursive=true) }}
+
+- name: Reality | Rebuild Inbounds With Patched One
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_inbounds_patched: >-
+      {{
+        (_core_inbounds
+          | rejectattr('tag','equalto', panel_register_reality_inbound_tag)
+          | list) + [_core_inb_patched]
+      }}
+
+- name: Reality | Build Final Core Config
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    _core_cfg_patched: >-
+      {{
+        _core_cfg.json
+        | combine({'inbounds': _core_inbounds_patched}, recursive=true)
+      }}
+
+# При необходимости — можно сначала посмотреть, что уйдёт:
+# - name: Reality | Debug final inbounds (dry)
+#   delegate_to: localhost
+#   ansible.builtin.debug:
+#     msg: "{{ _core_cfg_patched.inbounds | to_nice_json }}"
+
+- name: Reality | PUT /api/core/config (Apply)
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_register_url }}/api/core/config"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _panel_effective_token }}"
+    body_format: json
+    body: "{{ _core_cfg_patched }}"
+    validate_certs: "{{ panel_register_validate_certs }}"
+    status_code: 200
+  register: _reality_put_core
+
+- name: Reality | Apply Result
+  delegate_to: localhost
+  ansible.builtin.debug:
+    msg: >-
+      REALITY serverNames updated via /api/core/config for tag
+      '{{ panel_register_reality_inbound_tag }}'.
