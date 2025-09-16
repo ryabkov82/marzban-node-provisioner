@@ -81,8 +81,10 @@ ping: ## Ansible ping to all/limited hosts
 
 deploy: ## Full deploy (all plays)
 	$(LOAD_ENV)
+	@lim="$(LIMIT)"; \
+	if [ -n "$$lim" ]; then lim="$$lim,localhost"; fi; \
 	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
-		$(if $(LIMIT),--limit "$(LIMIT)",) \
+		$${lim:+--limit "$$lim"} \
 		$(if $(TAGS),--tags "$(TAGS)",) \
 		$(EXTRA)
 
