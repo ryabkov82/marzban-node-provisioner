@@ -19,8 +19,8 @@
 
 - name: Nginx | Derive vhost paths
   ansible.builtin.set_fact:
-    nginx_vhost_conf_resolved: "{{ nginx_sites_available_dir_resolved }}/{{ nginx_vhost_name_resolved }}.conf"
-    nginx_enabled_link_resolved: "{{ nginx_sites_enabled_dir_resolved }}/{{ nginx_vhost_name_resolved }}.conf"
+    nginx_vhost_conf_resolved: "{{ nginx_sites_available_dir_resolved }}/{{ nginx_vhost_name_resolved }}"
+    nginx_enabled_link_resolved: "{{ nginx_sites_enabled_dir_resolved }}/{{ nginx_vhost_name_resolved }}"
   tags: [nginx]
 
 - name: Nginx | Ensure sites-available/sites-enabled exist
