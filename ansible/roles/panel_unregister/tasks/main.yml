@@ -66,14 +66,22 @@
     status_code: 200
   register: panel_unregister_hosts_cur
 
-- name: Hosts | Determine requested/effective tags
+# 1) requested/available
+- name: Hosts | Determine requested/available tags
   when: panel_unregister_remove_hosts | bool
   delegate_to: localhost
   ansible.builtin.set_fact:
     panel_unregister_requested_tags: "{{ panel_unregister_hosts_inbound_tags | default([]) }}"
-    panel_unregister_available_tags: "{{ panel_unregister_hosts_cur.json.keys() | list | default([]) }}"
+    panel_unregister_available_tags: "{{ (panel_unregister_hosts_cur.json | default({})).keys() | list }}"
+
+# 2) effective = intersection(requested, available)
+- name: Hosts | Determine effective tags
+  when: panel_unregister_remove_hosts | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
     panel_unregister_effective_tags: >-
-      {{ panel_unregister_requested_tags | intersect(panel_unregister_available_tags) }}
+      {{ panel_unregister_requested_tags | default([])
+         | intersect(panel_unregister_available_tags | default([])) }}
 
 - name: Hosts | Build remove list
   when: panel_unregister_remove_hosts | bool
@@ -83,33 +91,46 @@
       {{ [panel_unregister_address] + (panel_unregister_reality_extra_names | default([])) }}
 
 # Сформируем payload только с изменёнными ключами
-- name: Hosts | Compose update payload (remove this node entries)
-  when: panel_unregister_remove_hosts | bool
+- name: Hosts | Init update payload
   delegate_to: localhost
   ansible.builtin.set_fact:
-    panel_unregister_hosts_payload_update: >-
-      {{
-        dict(panel_unregister_effective_tags | map('community.general.dict_kv',
-          'k', 'v') | map('combine',
-          {
-            'v': (
-              (panel_unregister_hosts_cur.json[item] | default([]))
-              | reject('equalto', None)
-              | rejectattr('address','in', panel_unregister_remove_names)
-              | rejectattr('remark','equalto', panel_unregister_node_name)
-              | list
-            )
-          }
-        )
-        | selectattr('v', 'ne', panel_unregister_hosts_cur.json[item])
-        | map('community.general.dict_kv_to_dict')
-        | list)
-      }}
+    panel_unregister_hosts_payload_update: {}
+
+- name: Hosts | Debug preconditions
+  delegate_to: localhost
+  when: panel_unregister_remove_hosts | bool
+  ansible.builtin.debug:
+    msg:
+      remove_hosts: "{{ panel_unregister_remove_hosts | bool }}"
+      requested: "{{ panel_unregister_hosts_inbound_tags | default([]) }}"
+      available: "{{ (panel_unregister_hosts_cur.json | default({})).keys() | list }}"
+      effective: "{{ panel_unregister_effective_tags | default([]) }}"
+      remove_names: "{{ panel_unregister_remove_names | default([]) }}"
+      node_name: "{{ panel_unregister_node_name | default('') }}"
+
+# 1) Составляем payload по тегам, отбрасывая записи этого узла
+- name: Hosts | Compose update payload (remove this node entries)
+  delegate_to: localhost
   vars:
-    item: "{{ item }}"
-  loop: "{{ panel_unregister_effective_tags }}"
+    tag: "{{ item }}"
+    _cur: "{{ panel_unregister_hosts_cur.json[tag] | default([]) }}"
+    _new: >-
+      {{ _cur
+         | reject('equalto', none)
+         | rejectattr('address', 'in', panel_unregister_remove_names | default([]))
+         | rejectattr('remark', 'equalto', panel_unregister_node_name | default(''))
+         | list
+      }}
+  ansible.builtin.set_fact:
+    panel_unregister_hosts_payload_update: >-
+      {{ panel_unregister_hosts_payload_update
+         | combine({ tag: _new }, recursive=True) }}
+  loop: "{{ panel_unregister_effective_tags | default([]) }}"
   loop_control:
     label: "{{ item }}"
+  when:
+    - panel_unregister_remove_hosts | bool
+    - _new != _cur
 
 # debug/dry-run
 - name: Hosts | Show update payload (dry)
@@ -221,40 +242,48 @@
     panel_unregister_core_server_names_new: >-
       {{ panel_unregister_core_server_names | difference(panel_unregister_names_to_remove) }}
 
-- name: Reality | Patch stream/inbound/config if changed
+- name: Reality | Build patched stream/inbound/config (no apply yet)
+  delegate_to: localhost
   when:
     - panel_unregister_clean_reality | bool
-    - panel_unregister_core_server_names_new | length
-      != panel_unregister_core_server_names | length
-  delegate_to: localhost
-  ansible.builtin.set_fact:
-    panel_unregister_core_stream_patched: >-
+    - (panel_unregister_core_server_names_new | default([]) | sort)
+      != (panel_unregister_core_server_names | default([]) | sort)
+  vars:
+    __stream_patched: >-
       {{
         panel_unregister_core_stream
         | combine(
-            { 'realitySettings':
-                (panel_unregister_core_reality
-                 | combine({'serverNames': panel_unregister_core_server_names_new},
-                           recursive=true))
+            {
+              'realitySettings': (
+                panel_unregister_core_reality
+                | combine({'serverNames': panel_unregister_core_server_names_new | default([])},
+                          recursive=true)
+              )
             },
-            recursive=true)
+            recursive=true
+        )
       }}
-    panel_unregister_core_inb_patched: >-
+    __inb_patched: >-
       {{
         panel_unregister_core_inb_obj
-        | combine({'streamSettings': panel_unregister_core_stream_patched}, recursive=true)
+        | combine({'streamSettings': __stream_patched}, recursive=true)
       }}
-    panel_unregister_core_inbounds_patched: >-
+    __inbounds_patched: >-
       {{
         (panel_unregister_core_inbounds
-         | rejectattr('tag','equalto', panel_unregister_reality_inbound_tag)
-         | list) + [panel_unregister_core_inb_patched]
+         | rejectattr('tag', 'equalto', panel_unregister_reality_inbound_tag)
+         | list) + [__inb_patched]
       }}
-    panel_unregister_core_cfg_patched: >-
+    __cfg_patched: >-
       {{
         panel_unregister_core_cfg.json
-        | combine({'inbounds': panel_unregister_core_inbounds_patched}, recursive=true)
+        | combine({'inbounds': __inbounds_patched}, recursive=true)
       }}
+  ansible.builtin.set_fact:
+    panel_unregister_core_stream_patched: "{{ __stream_patched }}"
+    panel_unregister_core_inb_patched: "{{ __inb_patched }}"
+    panel_unregister_core_inbounds_patched: "{{ __inbounds_patched }}"
+    panel_unregister_core_cfg_patched: "{{ __cfg_patched }}"
 
 - name: Reality | PUT /api/core/config (apply)
   when:
@@ -310,8 +339,7 @@
 - name: Node | DELETE /api/node/{id}
   when:
     - panel_unregister_delete_node | bool
-    - panel_unregister_node_id is defined
-    - panel_unregister_node_id is not none
+    - (panel_unregister_node_id | default('') | string | length) > 0
   delegate_to: localhost
   ansible.builtin.uri:
     url: "{{ panel_unregister_url }}/api/node/{{ panel_unregister_node_id }}"
@@ -325,7 +353,7 @@
 - name: Node | Not found (skip delete)
   when:
     - panel_unregister_delete_node | bool
-    - panel_unregister_node_id is not defined or panel_unregister_node_id is none
+    - (panel_unregister_node_id | default('') | string | length) > 0
   delegate_to: localhost
   ansible.builtin.debug:
     msg: "Node '{{ panel_unregister_node_name }}' not found. Skipping DELETE."

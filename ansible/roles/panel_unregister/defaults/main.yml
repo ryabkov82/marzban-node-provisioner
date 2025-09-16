@@ -12,7 +12,14 @@ panel_unregister_access_token: "{{ lookup('env', 'PANEL_ACCESS_TOKEN') | default
 panel_unregister_node_name: "{{ inventory_hostname }}"
 
 # Адреса/имена, которые надо убрать из Host Settings и из REALITY serverNames
-panel_unregister_address: "{{ hostvars[inventory_hostname].panel_register_address | default(hostvars[inventory_hostname].ansible_host | default(inventory_hostname)) }}"
+panel_unregister_address: >-
+  {{ hostvars[inventory_hostname].panel_register_address
+      | default(
+          hostvars[inventory_hostname].ansible_host
+          | default(inventory_hostname)
+        )
+  }}
+
 panel_unregister_reality_extra_names: []
 
 # Какие inbound-ключи чистим в Host Settings (если есть)

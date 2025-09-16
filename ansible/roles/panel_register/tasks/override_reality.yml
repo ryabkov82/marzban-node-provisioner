@@ -130,7 +130,7 @@
   delegate_to: localhost
   ansible.builtin.set_fact:
     _names_to_add: >-
-      {{ [panel_register_address] + (panel_register_reality_extra_names | default([])) }}
+      {{ (panel_register_reality_extra_names | default([])) }}
 
 - name: Reality | Merge Existing + New (Unique)
   delegate_to: localhost

@@ -9,10 +9,11 @@ cf_dns_records:
   - { name: "segment-ams-03",    type: "A", proxied: false }
   - { name: "stream-ams-03",     type: "A", proxied: false }
 
-panel_register_node_name: "edge-ams-03"
-panel_register_address: "edge-ams-03.digitalstreamers.xyz"
+panel_register_node_name: "vpn 🇳🇱 3"
+# panel_register_address: "edge-ams-03.digitalstreamers.xyz"
 
 # Host Settings
+panel_register_hosts_remark: "🇳🇱 3 vpn-for-friends"
 panel_register_hosts_port: 443
 panel_register_hosts_sni: "edge-ams-03.digitalstreamers.xyz"
 panel_register_hosts_host: "edge-ams-03.digitalstreamers.xyz"

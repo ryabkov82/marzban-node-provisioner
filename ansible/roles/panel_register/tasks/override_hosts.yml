@@ -113,14 +113,14 @@
       {{
         ((panel_register_hosts_sni_preferred | default('')) | length > 0)
           | ternary([panel_register_hosts_sni_preferred], [])
-        + [panel_register_address]
+        + [panel_register_hosts_host]
         + (panel_register_reality_extra_names | default([]))
       }}
 
 - name: Hosts | Build SNI CSV (comma-separated)
   delegate_to: localhost
   ansible.builtin.set_fact:
-    sni_csv: "{{ (_sni_candidates | reject('equalto','') | list | unique) | join(',') }}"
+    _sni_csv: "{{ (_sni_candidates | reject('equalto', '') | list | unique) | join(',') }}"
 
 - name: Hosts | Compose host object for this node
   delegate_to: localhost
@@ -128,11 +128,10 @@
     _host_obj: >-
       {{
         {
-          'address': panel_register_address,
+          'address': panel_register_hosts_host,
           'host': (panel_register_hosts_host | default(panel_register_address)),
           'port': (panel_register_hosts_port | default(443)),
           'remark': (panel_register_hosts_remark | default(inventory_hostname)),
-          'security': (panel_register_hosts_security | default('tls')),
           'sni': _sni_csv
         }
       }}
