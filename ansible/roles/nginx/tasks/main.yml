@@ -1,5 +1,5 @@
 ---
-- name: Install nginx and ssl-cert
+- name: Nginx | Install nginx and ssl-cert
   ansible.builtin.apt:
     name:
       - nginx
@@ -8,23 +8,50 @@
     update_cache: true
   tags: [nginx]
 
-- name: Ensure conf.d exists
+# Локальные «резолвнутые» пути/имена с безопасными значениями по умолчанию
+- name: Nginx | Set local vars
+  ansible.builtin.set_fact:
+    nginx_sites_available_dir_resolved: "{{ nginx_sites_available_dir | default('/etc/nginx/sites-available') }}"
+    nginx_sites_enabled_dir_resolved: "{{ nginx_sites_enabled_dir | default('/etc/nginx/sites-enabled') }}"
+    nginx_conf_d_dir_resolved: "{{ nginx_conf_d_dir | default('/etc/nginx/conf.d') }}"
+    nginx_vhost_name_resolved: "{{ nginx_vhost_name | default('digitalstreamers.xyz') }}"
+  tags: [nginx]
+
+- name: Nginx | Derive vhost paths
+  ansible.builtin.set_fact:
+    nginx_vhost_conf_resolved: "{{ nginx_sites_available_dir_resolved }}/{{ nginx_vhost_name_resolved }}.conf"
+    nginx_enabled_link_resolved: "{{ nginx_sites_enabled_dir_resolved }}/{{ nginx_vhost_name_resolved }}.conf"
+  tags: [nginx]
+
+- name: Nginx | Ensure sites-available/sites-enabled exist
   ansible.builtin.file:
-    path: /etc/nginx/conf.d
+    path: "{{ item }}"
     state: directory
     mode: "0755"
+  loop:
+    - "{{ nginx_sites_available_dir_resolved }}"
+    - "{{ nginx_sites_enabled_dir_resolved }}"
   tags: [nginx]
 
-- name: Deploy HTTPS vhost to 8443
+- name: Nginx | Deploy vhost into sites-available
   ansible.builtin.template:
     src: https_8443.conf.j2
-    dest: /etc/nginx/conf.d/https_8443.conf
+    dest: "{{ nginx_vhost_conf_resolved }}"
     mode: "0644"
     backup: true
-  notify: Reload nginx
+  notify: Validate nginx config
   tags: [nginx]
 
-- name: Ensure nginx enabled and running
+- name: Nginx | Enable vhost via symlink in sites-enabled
+  ansible.builtin.file:
+    src: "{{ nginx_vhost_conf_resolved }}"
+    dest: "{{ nginx_enabled_link_resolved }}"
+    state: link
+    force: true
+  notify: Validate nginx config
+  tags: [nginx]
+
+- name: Nginx | Ensure nginx enabled and running
   ansible.builtin.service:
     name: nginx
     state: started

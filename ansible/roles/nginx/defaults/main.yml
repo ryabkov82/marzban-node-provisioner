@@ -1,0 +1,10 @@
+---
+# Где храним vhost
+nginx_sites_available_dir: /etc/nginx/sites-available
+nginx_sites_enabled_dir: /etc/nginx/sites-enabled
+nginx_conf_d_dir: /etc/nginx/conf.d
+
+# Имя vhost-файла (по умолчанию — digitalstreamers.xyz)
+nginx_vhost_name: digitalstreamers.xyz
+nginx_vhost_conf: "{{ nginx_sites_available_dir }}/{{ nginx_vhost_name }}.conf"
+nginx_enabled_link: "{{ nginx_sites_enabled_dir }}/{{ nginx_vhost_name }}.conf"
