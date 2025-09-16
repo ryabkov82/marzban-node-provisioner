@@ -1,0 +1,331 @@
+---
+# Все запросы делаем локально, как и в panel_register
+- name: Panel Unregister | Assert Required Inputs
+  delegate_to: localhost
+  ansible.builtin.assert:
+    that:
+      - (panel_unregister_url | length) > 0
+      - (panel_unregister_node_name | length) > 0
+    fail_msg: "panel_unregister_url / panel_unregister_node_name are required."
+
+- name: Panel Unregister | Pick Effective Token
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_effective_token: >-
+      {{
+        hostvars['localhost'].panel_api_access_token
+          | default(panel_unregister_access_token
+          | default(lookup('env','PANEL_ACCESS_TOKEN') | default('')))
+      }}
+
+- name: Panel Unregister | Assert Token Present
+  delegate_to: localhost
+  ansible.builtin.assert:
+    that:
+      - (panel_unregister_effective_token | length) > 0
+    fail_msg: "Panel API token is missing (use Play 1 panel_api or pass PANEL_ACCESS_TOKEN)."
+
+# --- 1) Найти node_id по имени ---
+- name: Panel Unregister | GET /api/nodes
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/nodes"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    return_content: true
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+    status_code: 200
+  register: panel_unregister_nodes
+
+- name: Panel Unregister | Resolve node_id by name
+  delegate_to: localhost
+  vars:
+    _q: "[?name=='{{ panel_unregister_node_name }}'].id | [0]"
+  ansible.builtin.set_fact:
+    panel_unregister_node_id: >-
+      {{ (panel_unregister_nodes.json | default([])) | json_query(_q) | default(None) }}
+
+- name: Panel Unregister | Debug node_id (optional)
+  delegate_to: localhost
+  ansible.builtin.debug:
+    msg: "node '{{ panel_unregister_node_name }}' → id={{ panel_unregister_node_id | default('NOT FOUND') }}"
+  when: panel_unregister_node_id is defined
+
+# --- 2) Чистим Host Settings (если включено) ---
+- name: Hosts | GET /api/hosts (current)
+  when: panel_unregister_remove_hosts | bool
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/hosts"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    return_content: true
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+    status_code: 200
+  register: panel_unregister_hosts_cur
+
+- name: Hosts | Determine requested/effective tags
+  when: panel_unregister_remove_hosts | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_requested_tags: "{{ panel_unregister_hosts_inbound_tags | default([]) }}"
+    panel_unregister_available_tags: "{{ panel_unregister_hosts_cur.json.keys() | list | default([]) }}"
+    panel_unregister_effective_tags: >-
+      {{ panel_unregister_requested_tags | intersect(panel_unregister_available_tags) }}
+
+- name: Hosts | Build remove list
+  when: panel_unregister_remove_hosts | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_remove_names: >-
+      {{ [panel_unregister_address] + (panel_unregister_reality_extra_names | default([])) }}
+
+# Сформируем payload только с изменёнными ключами
+- name: Hosts | Compose update payload (remove this node entries)
+  when: panel_unregister_remove_hosts | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_hosts_payload_update: >-
+      {{
+        dict(panel_unregister_effective_tags | map('community.general.dict_kv',
+          'k', 'v') | map('combine',
+          {
+            'v': (
+              (panel_unregister_hosts_cur.json[item] | default([]))
+              | reject('equalto', None)
+              | rejectattr('address','in', panel_unregister_remove_names)
+              | rejectattr('remark','equalto', panel_unregister_node_name)
+              | list
+            )
+          }
+        )
+        | selectattr('v', 'ne', panel_unregister_hosts_cur.json[item])
+        | map('community.general.dict_kv_to_dict')
+        | list)
+      }}
+  vars:
+    item: "{{ item }}"
+  loop: "{{ panel_unregister_effective_tags }}"
+  loop_control:
+    label: "{{ item }}"
+
+# debug/dry-run
+- name: Hosts | Show update payload (dry)
+  when:
+    - panel_unregister_remove_hosts | bool
+    - panel_unregister_hosts_payload_update is defined
+    - (panel_unregister_hosts_payload_update | length) > 0
+    - panel_unregister_hosts_dry_run | bool
+  delegate_to: localhost
+  ansible.builtin.debug:
+    msg: "{{ panel_unregister_hosts_payload_update | to_nice_json }}"
+
+- name: Hosts | PUT /api/hosts (apply)
+  when:
+    - panel_unregister_remove_hosts | bool
+    - panel_unregister_hosts_payload_update is defined
+    - (panel_unregister_hosts_payload_update | length) > 0
+    - not panel_unregister_hosts_dry_run | bool
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/hosts"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    body_format: json
+    body: "{{ panel_unregister_hosts_payload_update }}"
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+    status_code: 200
+  register: panel_unregister_hosts_put
+
+# --- 3) Чистим REALITY serverNames в core-конфиге (если включено) ---
+- name: Reality | GET /api/core/config
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/core/config"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    return_content: true
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+    status_code: 200
+  register: panel_unregister_core_cfg
+
+- name: Reality | Extract inbounds + pick by tag
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_core_inbounds: "{{ panel_unregister_core_cfg.json.inbounds | default([]) }}"
+    panel_unregister_core_inb_obj: >-
+      {{
+        (panel_unregister_core_cfg.json.inbounds | default([])
+         | selectattr('tag','equalto', panel_unregister_reality_inbound_tag)
+         | list | first) | default({})
+      }}
+
+- name: Reality | Extract stream/reality
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_core_stream: >-
+      {{ panel_unregister_core_inb_obj.streamSettings
+         | default(panel_unregister_core_inb_obj.stream_settings | default({})) }}
+    panel_unregister_core_reality: >-
+      {{ panel_unregister_core_stream.realitySettings
+         | default(panel_unregister_core_stream.reality_settings | default({})) }}
+
+- name: Reality | Query current serverNames (JMESPath)
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  vars:
+    _q_camel: >-
+      [?tag=='{{ panel_unregister_reality_inbound_tag }}']
+      .streamSettings.realitySettings.serverNames | [0]
+    _q_snake: >-
+      [?tag=='{{ panel_unregister_reality_inbound_tag }}']
+      .stream_settings.reality_settings.server_names | [0]
+  ansible.builtin.set_fact:
+    panel_unregister_core_server_names_raw: >-
+      {{
+        (panel_unregister_core_cfg.json.inbounds | default([]) | json_query(_q_camel))
+        | default(panel_unregister_core_cfg.json.inbounds | default([]) | json_query(_q_snake))
+        | default([])
+      }}
+
+- name: Reality | Normalize serverNames to list
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_core_server_names: >-
+      {{
+        (panel_unregister_core_server_names_raw is string)
+          | ternary([panel_unregister_core_server_names_raw],
+                    ((panel_unregister_core_server_names_raw is sequence)
+                      | ternary(panel_unregister_core_server_names_raw, [])))
+      }}
+
+- name: Reality | Build names-to-remove
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_names_to_remove: >-
+      {{ [panel_unregister_address] + (panel_unregister_reality_extra_names | default([])) }}
+
+- name: Reality | Compute new serverNames (minus removed)
+  when: panel_unregister_clean_reality | bool
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_core_server_names_new: >-
+      {{ panel_unregister_core_server_names | difference(panel_unregister_names_to_remove) }}
+
+- name: Reality | Patch stream/inbound/config if changed
+  when:
+    - panel_unregister_clean_reality | bool
+    - panel_unregister_core_server_names_new | length
+      != panel_unregister_core_server_names | length
+  delegate_to: localhost
+  ansible.builtin.set_fact:
+    panel_unregister_core_stream_patched: >-
+      {{
+        panel_unregister_core_stream
+        | combine(
+            { 'realitySettings':
+                (panel_unregister_core_reality
+                 | combine({'serverNames': panel_unregister_core_server_names_new},
+                           recursive=true))
+            },
+            recursive=true)
+      }}
+    panel_unregister_core_inb_patched: >-
+      {{
+        panel_unregister_core_inb_obj
+        | combine({'streamSettings': panel_unregister_core_stream_patched}, recursive=true)
+      }}
+    panel_unregister_core_inbounds_patched: >-
+      {{
+        (panel_unregister_core_inbounds
+         | rejectattr('tag','equalto', panel_unregister_reality_inbound_tag)
+         | list) + [panel_unregister_core_inb_patched]
+      }}
+    panel_unregister_core_cfg_patched: >-
+      {{
+        panel_unregister_core_cfg.json
+        | combine({'inbounds': panel_unregister_core_inbounds_patched}, recursive=true)
+      }}
+
+- name: Reality | PUT /api/core/config (apply)
+  when:
+    - panel_unregister_clean_reality | bool
+    - panel_unregister_core_server_names_new | length
+      != panel_unregister_core_server_names | length
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/core/config"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    body_format: json
+    body: "{{ panel_unregister_core_cfg_patched }}"
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+    status_code: 200
+  register: panel_unregister_reality_put
+
+- name: Reality | POST /api/core/restart
+  when:
+    - panel_unregister_clean_reality | bool
+    - panel_unregister_core_server_names_new | length
+      != panel_unregister_core_server_names | length
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/core/restart"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    status_code: 200
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+  register: panel_unregister_core_restart
+
+- name: Reality | Wait for /api/system (ready)
+  when:
+    - panel_unregister_clean_reality | bool
+    - panel_unregister_core_server_names_new | length
+      != panel_unregister_core_server_names | length
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/system"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    status_code: 200
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+  register: panel_unregister_system_ok
+  retries: 20
+  delay: 1
+  until: panel_unregister_system_ok.status == 200
+
+# --- 4) DELETE /api/node/{id} (если нашли id и включено) ---
+- name: Node | DELETE /api/node/{id}
+  when:
+    - panel_unregister_delete_node | bool
+    - panel_unregister_node_id is defined
+    - panel_unregister_node_id is not none
+  delegate_to: localhost
+  ansible.builtin.uri:
+    url: "{{ panel_unregister_url }}/api/node/{{ panel_unregister_node_id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ panel_unregister_effective_token }}"
+    status_code: 200
+    validate_certs: "{{ panel_unregister_validate_certs }}"
+  register: panel_unregister_delete
+
+- name: Node | Not found (skip delete)
+  when:
+    - panel_unregister_delete_node | bool
+    - panel_unregister_node_id is not defined or panel_unregister_node_id is none
+  delegate_to: localhost
+  ansible.builtin.debug:
+    msg: "Node '{{ panel_unregister_node_name }}' not found. Skipping DELETE."

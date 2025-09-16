@@ -22,7 +22,7 @@
   - **purge по IP**: удаление всех DNS-записей, указывающих на заданный IP.
 - **Unregister**:
   - удаление узла из Host Settings, чистка его FQDN в REALITY, рестарт core;
-  - удаление Node (`DELETE /api/node/{id}`).
+  - удаление Node (`DELETE /api/node/{id}`). 
 - **Cert-master enroll/unenroll**:
   - добавление/удаление узла в allow-list файла рассылки сертификатов на мастер-сервере.
 
@@ -269,16 +269,17 @@ panel_register_reality_extra_names:
   - "cache-ams-03.digitalstreamers.xyz"
   - "segment-ams-03.digitalstreamers.xyz"
 
-# Теги inbound'ов, куда добавлять хост в Host Settings
+# В какие inbound'ы добавлять хост в Host Settings
 panel_register_hosts_inbound_tags:
   - "vless"
+
 # multi-SNI (строка формируется автоматически из address + extra_names;
 # при желании можно задать приоритетное имя):
 # panel_register_hosts_sni_preferred: "edge-ams-03.digitalstreamers.xyz"
 ```
 
 > Для Cloudflare DNS: добавьте `cf_dns_records` с нужным набором A-записей (см. существующие примеры).  
-> Для «общих» записей (`www`, `site`) отключайте поведение «solo default» в вашей конфигурации DNS-роли (мы поддерживаем оба сценария).
+> Для «общих» записей (`www`, `site`) отключайте поведение «solo default» в вашей конфигурации DNS-роли или примените агрегатор.
 
 ---
 
@@ -301,11 +302,168 @@ panel_register_hosts_inbound_tags:
 
 ---
 
+## Пошаговая инструкция: как добавить **новый узел**
+
+Ниже — краткий чек-лист, чтобы узел корректно встал в инфраструктуру и попал в панель.
+
+### 0) Предусловия
+- Вы знаете **IP адрес** сервера (или уже есть DNS-имя).
+- На сервере открыт SSH (обычно 22/tcp) и порт 443/tcp наружу (для HAProxy).  
+- На вашей машине установлен Ansible (см. раздел «Установка зависимостей»).
+
+### 1) Подготовьте SSH-ключ (если ещё нет)
+Рекомендуем отдельный ключ для деплоя:
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/ds_ansible -C "marzban-provision"
+```
+
+### 2) Установите публичный ключ на **новый сервер**
+Проще всего:
+```bash
+ssh-copy-id -i ~/.ssh/ds_ansible.pub root@<IP_НОВОГО_СЕРВЕРА>
+```
+или вручную:
+```bash
+cat ~/.ssh/ds_ansible.pub | ssh root@<IP> 'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'
+```
+
+### 3) Добавьте алиас в `~/.ssh/config`
+Чтобы использовать удобное имя (пример: `nl-ams-3`):
+```sshconfig
+Host nl-ams-3
+  HostName 45.142.164.36
+  User root
+  IdentityFile ~/.ssh/ds_ansible
+```
+Проверьте доступ:
+```bash
+ssh -o StrictHostKeyChecking=accept-new nl-ams-3 'uname -a'
+```
+
+### 4) Подготовьте инвентарь
+**Вариант A (через ssh-алиас)** — используйте `ansible/inventories/ssh_config.yml`:
+```yaml
+plugin: community.general.ssh_config
+strict: false
+```
+и в `.env` укажите:
+```
+INV=ansible/inventories/ssh_config.yml
+```
+
+**Вариант B (статический)** — в `ansible/inventories/prod.ini`:
+```ini
+[marzban_nodes]
+nl-ams-3 ansible_host=45.142.164.36 ansible_user=root
+```
+
+### 5) Создайте `host_vars` для узла
+`ansible/host_vars/nl-ams-3.yml`:
+```yaml
+# Адрес/FQDN узла (пойдёт в Host Settings и в REALITY)
+panel_register_address: "edge-ams-03.digitalstreamers.xyz"
+
+# Реальный inbound (tag) в core-конфиге панели, куда надо добавлять serverNames
+panel_register_reality_inbound_tag: "VLESS TCP REALITY"
+
+# Дополнительные имена (также попадут в multi-SNI для Host Settings)
+panel_register_reality_extra_names:
+  - "edge-ams-03.digitalstreamers.xyz"
+  - "stream-ams-03.digitalstreamers.xyz"
+  - "cache-ams-03.digitalstreamers.xyz"
+  - "segment-ams-03.digitalstreamers.xyz"
+
+# В какие inbound'ы добавлять хост в Host Settings
+panel_register_hosts_inbound_tags:
+  - "vless"
+
+# (опционально) Порты сервиса и API узла
+service_port: 62050
+api_port: 62051
+
+# (опционально) Домены сайта для HAProxy/nginx (если используете HTTP-вебку за 8443)
+website_domains:
+  - site.digitalstreamers.xyz
+  - www.digitalstreamers.xyz
+```
+
+### 6) (Опционально) Подготовьте DNS (Cloudflare)
+Добавьте записи для узла:
+```yaml
+# ansible/host_vars/nl-ams-3.yml (продолжение)
+cf_dns_records:
+  - { name: "edge-ams-03",    type: "A", proxied: false }
+  - { name: "stream-ams-03",  type: "A", proxied: false }
+  - { name: "cache-ams-03",   type: "A", proxied: false }
+  - { name: "segment-ams-03", type: "A", proxied: false }
+
+# Общие записи (www, site) управляются отдельно и не «привязываются» к одному узлу.
+# Для них отключите «solo default» в вашей конфигурации DNS-роли или примените агрегатор.
+```
+Примените:
+```bash
+make dns-apply LIMIT=nl-ams-3
+```
+
+### 7) (Опционально) Разрешите узел на **cert-master**
+Если вы рассылаете wildcard-сертификат с мастер-сервера:
+- Убедитесь, что **деплой-ключ контроллера** (локальной машины/CI) добавлен в `~/.ssh/authorized_keys` на cert-master.
+- Внесите узел в allow-list (по умолчанию `/root/etc/cert-sync-servers.txt`):
+```bash
+make cert-master-enroll LIMIT=nl-ams-3
+```
+
+### 8) Запустите деплой
+**Полный деплой:**
+```bash
+make deploy LIMIT=nl-ams-3
+```
+**Либо по шагам:**
+```bash
+make update-only    LIMIT=nl-ams-3   # обновление ОС
+make tls-only       LIMIT=nl-ams-3   # доставка сертификата с cert-master
+make proxy-only     LIMIT=nl-ams-3   # HAProxy + nginx
+make container-only LIMIT=nl-ams-3   # docker + marzban-node
+make panel-register LIMIT=nl-ams-3   # регистрация в панели (Host Settings + REALITY)
+```
+
+### 9) Проверьте прокси/доступность
+```bash
+make proxy-check LIMIT=nl-ams-3
+# Проверит haproxy/nginx конфиги, активность сервисов, порты и ответ nginx через HAProxy.
+```
+
+### 10) (Опционально) Запуск через GitHub Actions
+- Добавьте Secrets: `PANEL_URL`, `PANEL_USERNAME`, `PANEL_PASSWORD` (или `PANEL_ACCESS_TOKEN`), `SSH_PRIVATE_KEY`, а для DNS — `CF_API_TOKEN`, `CF_ZONE`.
+- Запустите workflow «Deploy Marzban Node», укажите узел (`nodes`) и режим `full`/частичный.
+
+### 11) Готово
+Узел поднят, сертификат в `/etc/letsencrypt/live/<domain>/`, HAProxy слушает `:443`, nginx — `127.0.0.1:8443`, контейнер `marzban-node` запущен, панель знает про узел (Host Settings + REALITY).
+
+---
+
+### Быстрая диагностика
+
+- `ssh nl-ams-3 "docker ps | grep marzban-node"`
+- `ssh nl-ams-3 "ss -lntp | egrep ':443|:1936|:8443|:8444' || true"`
+- `curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1` (с узла)
+- Если `Permission denied (publickey)` — проверьте `~/.ssh/config` и содержимое `authorized_keys` на узле.
+
+---
+
+## GitHub Actions
+
+В репозитории есть workflow **Deploy Marzban Node**.  
+Он умеет запускать **полный деплой** или **частичные режимы**, а после полного — выполнить **post-checks** (syntax HAProxy/nginx, активность сервисов, слушающие порты, curl-проверки SNI).  
+Переменные берутся из GitHub Secrets (`PANEL_URL`, `PANEL_USERNAME`, `PANEL_PASSWORD`/`PANEL_ACCESS_TOKEN`, `SSH_PRIVATE_KEY`, а для DNS — `CF_API_TOKEN`, `CF_ZONE`, …).
+
+---
+
 ## Частые проблемы
 
 - **Не видит инвентарь/хосты** — проверьте `INV` в `.env`, содержимое `prod.ini` или корректность `ssh_config.yml` и наличие коллекции `community.general`.
 - **Узел недоступен по SSH** — проверьте ключ, `~/.ssh/config`, `known_hosts`, секцию `ansible_user`, а также фаервол.
-- **Host Settings возвращает 400/“Inbound X doesn’t exist”** — убедитесь, что используете **правильные теги** inbound’ов (`vless`, `shadowsocks`) или отключите теги, которых нет.
+- **Host Settings возвращает 400/“Inbound X doesn’t exist”** — убедитесь, что используете **правильные теги** inbound'ов (`vless`, `shadowsocks`) или отключите теги, которых нет.
 - **REALITY не меняется** — проверьте `panel_register_reality_inbound_tag` (точный **tag** из core-конфига) и наличие `streamSettings.realitySettings` у этого inbound.
 
 ---

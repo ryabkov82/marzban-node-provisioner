@@ -1,0 +1,30 @@
+---
+# URL/верификация
+panel_unregister_url: "{{ lookup('env', 'PANEL_URL') | default('') }}"
+panel_unregister_validate_certs: >-
+  {{ (lookup('env', 'PANEL_VERIFY_TLS') | default('true')) | bool }}
+
+# Токен: можно передать из Play 1 (panel_api) через _panel_token,
+# или задать явно здесь/через env PANEL_ACCESS_TOKEN.
+panel_unregister_access_token: "{{ lookup('env', 'PANEL_ACCESS_TOKEN') | default('') }}"
+
+# Что удаляем (по умолчанию — текущий inventory_hostname)
+panel_unregister_node_name: "{{ inventory_hostname }}"
+
+# Адреса/имена, которые надо убрать из Host Settings и из REALITY serverNames
+panel_unregister_address: "{{ hostvars[inventory_hostname].panel_register_address | default(hostvars[inventory_hostname].ansible_host | default(inventory_hostname)) }}"
+panel_unregister_reality_extra_names: []
+
+# Какие inbound-ключи чистим в Host Settings (если есть)
+panel_unregister_hosts_inbound_tags: "VLESS TCP REALITY"
+
+# Какой REALITY inbound правим в core (точный tag)
+panel_unregister_reality_inbound_tag: "VLESS TCP REALITY"
+
+# Управляющие флаги
+panel_unregister_remove_hosts: true
+panel_unregister_clean_reality: true
+panel_unregister_delete_node: true
+
+# Dry-run только для /api/hosts (полезно посмотреть payload перед применением)
+panel_unregister_hosts_dry_run: false

@@ -112,3 +112,39 @@
         name: cert_master_enroll
       vars:
         cert_master_enroll_state: absent
+
+# Play 7: удаление узлов из панели (локально)
+- name: Unregister Nodes In Panel (Local)
+  hosts: localhost
+  gather_facts: false
+  tags: [panel_unregister]
+  tasks:
+    - name: Panel Unregister | For each node in group
+      ansible.builtin.include_role:
+        name: panel_unregister
+      loop: "{{ groups['marzban_nodes'] | default([]) }}"
+      loop_control: { loop_var: node }
+      vars:
+        # тянем токен/URL из Play 1 (panel_api) или из env
+        panel_unregister_url: >-
+          {{ hostvars['localhost'].panel_api_url
+             | default(lookup('env','PANEL_URL')) }}
+        panel_unregister_validate_certs: >-
+          {{ hostvars['localhost'].panel_api_validate_certs
+             | default((lookup('env','PANEL_VERIFY_TLS') | default('true')) | bool) }}
+        panel_unregister_access_token: >-
+          {{ hostvars['localhost'].panel_api_access_token
+             | default(lookup('env','PANEL_ACCESS_TOKEN') | default('')) }}
+        # кто удаляется
+        panel_unregister_node_name: "{{ node }}"
+        panel_unregister_address: >-
+          {{ hostvars[node].panel_register_address
+             | default(hostvars[node].ansible_host | default(node)) }}
+        panel_unregister_reality_inbound_tag: >-
+          {{ hostvars[node].panel_register_reality_inbound_tag
+             | default('VLESS TCP REALITY') }}
+        panel_unregister_reality_extra_names: >-
+          {{ hostvars[node].panel_register_reality_extra_names | default([]) }}
+        panel_unregister_hosts_inbound_tags: >-
+          {{ hostvars[node].panel_unregister_hosts_inbound_tags
+             | default(['vless','shadowsocks']) }}

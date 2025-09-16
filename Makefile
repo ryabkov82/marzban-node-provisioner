@@ -34,6 +34,29 @@ define LOAD_ENV
 set -a; [[ -f .env ]] && source ./.env || true; set +a
 endef
 
+# Вспомогательная функция: резолв IP цели
+define _RESOLVE_PURGE_IP
+ip="$$PURGE_IP"; \
+if [ -z "$$ip" ]; then \
+  host="$${LIMIT:?Set LIMIT=<inventory host> or provide PURGE_IP}"; \
+  inv="$${INV:-$(INV)}"; \
+  # 1) попробовать достать ansible_host из инвентаря
+  if command -v ansible-inventory >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then \
+    ip="$$(ansible-inventory -i "$$inv" --host "$$host" 2>/dev/null | jq -r '.ansible_host // empty')"; \
+  fi; \
+  # 2) если пусто — взять HostName из ssh -G
+  if [ -z "$$ip" ]; then \
+    ip="$$(ssh -G "$$host" 2>/dev/null | awk '/^hostname /{print $$2; exit}')"; \
+  fi; \
+  # 3) если это не IPv4 — зарезолвить в A-запись
+  if ! echo "$$ip" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$$'; then \
+    ip="$$(getent ahostsv4 "$$ip" | awk 'NR==1{print $$1}')"; \
+  fi; \
+fi; \
+if [ -z "$$ip" ]; then echo "Cannot resolve PURGE_IP; set PURGE_IP or LIMIT"; exit 2; fi; \
+echo "$$ip"
+endef
+
 .PHONY: help deps lint ping deploy update-only deploy-no-update list-tasks \
         haproxy nginx proxy-only \
         script-all script-update-only script-docker-only script-register-only \
@@ -170,10 +193,11 @@ dns-plan: ## Dry-run DNS (check mode)
 # make dns-purge-ip PURGE_IP=45.142.164.36 EXTRA="--check --diff"
 dns-purge-ip: ## Remove ALL Cloudflare DNS records that point to PURGE_IP (require PURGE_IP)
 	$(LOAD_ENV)
-	@test -n "$${PURGE_IP:-}" || { echo "Set PURGE_IP=<ip>"; exit 1; }
+	@ip="$$( $(call _RESOLVE_PURGE_IP) )"; \
+	echo "[dns-purge] Target IP: $$ip"; \	
 	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 		--tags dns_purge_ip \
-		-e cf_dns_purge_ip_target_ip="$${PURGE_IP}" \
+		-e cf_dns_purge_ip_target_ip="$$ip" \
 		-e cf_dns_purge_ip_confirm=true \
 		$(EXTRA)
 
@@ -187,6 +211,18 @@ cert-master-remove: ## Remove node from cert-master (SERVERS_FILE + revoke key).
 		--tags cert_master_remove \
 		$(if $(LIMIT),--limit "$(LIMIT)",) \
 		$(EXTRA)
+
+panel-unregister: ## Unregister node(s) from Marzban panel (use LIMIT=<host>)
+	$(LOAD_ENV)
+	$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+		--tags panel_unregister \
+		$(if $(LIMIT),--limit "$(LIMIT),localhost",--limit "localhost")
+
+# Композитная цель: полное выведение узла из эксплуатации
+purge-node: ## Decommission node: panel-unregister + cf-dns-purge-ip + cert-master-unenroll
+	$(MAKE) panel-unregister $(if $(LIMIT),LIMIT="$(LIMIT)")
+	$(MAKE) dns-purge-ip $(if $(LIMIT),LIMIT="$(LIMIT)") $(if $(PURGE_IP),PURGE_IP="$(PURGE_IP)")
+	$(MAKE) cert-master-remove $(if $(LIMIT),LIMIT="$(LIMIT)")
 
 # ---------- Script targets (scripts/add-node.sh) ----------
 # Uses PANEL_URL/PANEL_USERNAME/PANEL_PASSWORD and SSH_TARGET or SSH_USER+NODE (from .env or env)

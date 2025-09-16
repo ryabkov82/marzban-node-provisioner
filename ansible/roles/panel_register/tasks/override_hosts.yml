@@ -120,7 +120,7 @@
 - name: Hosts | Build SNI CSV (comma-separated)
   delegate_to: localhost
   ansible.builtin.set_fact:
-    _sni_csv: "{{ (_sni_candidates | reject('equalto','') | list | unique) | join(',') }}"
+    sni_csv: "{{ (_sni_candidates | reject('equalto','') | list | unique) | join(',') }}"
 
 - name: Hosts | Compose host object for this node
   delegate_to: localhost
