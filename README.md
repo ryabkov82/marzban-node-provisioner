@@ -1,178 +1,315 @@
 # Marzban Node Provisioner
 
-Автоматически разворачивает **Marzban Node** на удалённых серверах (Docker) и регистрирует его в панели Marzban — **без ручного копирования сертификата**.
+Автоматизирует **развёртывание Marzban Node** на серверах (Docker), настройку **HAProxy+nginx**, доставку **TLS-сертификата** с мастер-сервера, **регистрацию узла в панели** (Host Settings + REALITY), а также обратный сценарий — **удаление узла** с чисткой DNS и доступа к сертификатам.
 
-> Кому полезно: администраторам Marzban, кто добавляет узлы часто и хочет делать это одним плейбуком/джобой.
+> Кому полезно: администраторам Marzban, кто часто добавляет/удаляет узлы и хочет делать это одной командой — локально или в CI.
 
 ---
 
 ## Возможности
 
-- Получение токена панели (`/api/admin/token`) и сертификата узла (`/api/node/settings` → `certificate`)
-- Деплой контейнера `gozargah/marzban-node` с `SSL_CLIENT_CERT_FILE` и `SERVICE_PROTOCOL=rest`
-- Автоматическая регистрация узла в панели (`POST /api/node`)
-- Тихое обновление системы (noninteractive) перед установкой Docker — по желанию
-- Варианты запуска: **Ansible локально** или **GitHub Actions**
+- **OS update (noninteractive)**: тихое обновление/перезагрузка до установки Docker (настраивается тегами/флагами).
+- **Docker + контейнер `gozargah/marzban-node`** (host network), авторазвёртывание/перезапуск.
+- **HAProxy + nginx**: быстрая настройка TCP-проксирования (443→8443/8444), health-checks, /haproxy-stats.
+- **TLS Sync**: копирование `fullchain.pem`/`privkey.pem` с мастер-сервера сертификатов на новый узел по SSH (без rsync), проверка subject/сроков.
+- **Panel API**:
+  - создание Node (`POST /api/node`) с нужным адресом/портами;
+  - **Host Settings**: добавление/обновление хоста узла; поддержка **multi-SNI** (значения через запятую — Marzban выберет одно случайно);
+  - **REALITY**: чтение и **добавление** FQDN в `streamSettings.realitySettings.serverNames` через `PUT /api/core/config` (без очистки существующих) + **перезапуск core**.
+- **Cloudflare DNS**:
+  - создание A-записей для узла (по списку из `host_vars`);
+  - «solo default» можно отключать для общих записей (например, `www`, `site`);
+  - **purge по IP**: удаление всех DNS-записей, указывающих на заданный IP.
+- **Unregister**:
+  - удаление узла из Host Settings, чистка его FQDN в REALITY, рестарт core;
+  - удаление Node (`DELETE /api/node/{id}`).
+- **Cert-master enroll/unenroll**:
+  - добавление/удаление узла в allow-list файла рассылки сертификатов на мастер-сервере.
+
+Все операции доступны как **Ansible-плейбуки**, **Makefile-цели** и **GitHub Actions**.
 
 ---
 
 ## Требования
 
-- Доступ по SSH на узел (обычно `root` по ключу)
-- Ubuntu/Debian на узле (скрипт ставит Docker через официальный установщик)
-- На вашей машине (или в CI), откуда запускается плейбук:
-  - Python 3.10+
-  - Ansible 9+
-  - `community.docker` коллекция
-- Доступ к панели Marzban (URL, логин/пароль администратора)
+- Доступ по SSH к узлам (обычно `root` по ключу).
+- Ubuntu/Debian на узлах.
+- Доступ к панели Marzban (URL, логин/пароль админа или access-token).
+- Для Cloudflare: `CF_API_TOKEN`, `CF_ZONE` (и опц. `CF_ZONE_ID`).
 
-> Примеры ниже предполагают, что панель доступна по HTTPS. Для самоподписанных сертификатов можно временно отключить проверку (`panel_validate_certs=false`).
+Локально (вариант «system Ansible»):
+- `ansible` 9.x, `ansible-lint` (через apt/пакеты дистрибутива) или через venv (см. ниже).
 
 ---
 
-## Структура репозитория
+## Структура репозитория (главное)
 
 ```
 marzban-node-provisioner/
 ├─ README.md
-├─ LICENSE
+├─ .env.example
+├─ Makefile
 ├─ ansible/
 │  ├─ ansible.cfg
 │  ├─ collections/requirements.yml
+│  ├─ inventories/
+│  │  ├─ example.ini
+│  │  ├─ prod.ini                 # ваш прод-инвентарь (не коммитить)
+│  │  └─ ssh_config.yml           # inventory через ~/.ssh/config (опционально)
 │  ├─ group_vars/all.yml
-│  ├─ inventories/example.ini
+│  ├─ host_vars/                  # переменные на хост
 │  ├─ playbooks/provision_node.yml
-│  └─ roles/marzban_node/
-│     └─ tasks/main.yml
-├─ scripts/
-│  └─ add-node.sh
-└─ .github/workflows/deploy-node.yml
+│  └─ roles/
+│     ├─ marzban_node/
+│     ├─ haproxy/
+│     ├─ nginx/
+│     ├─ tls_sync/
+│     ├─ panel_api/
+│     ├─ panel_register/
+│     ├─ panel_unregister/
+│     ├─ cf_dns/
+│     ├─ cf_dns_purge_ip/
+│     └─ cert_master_enroll/
+└─ scripts/
+   └─ add-node.sh
 ```
+
+> **Важно:** `prod.ini` и любые приватные `host_vars/*` добавляйте в `.gitignore` (см. ниже).
 
 ---
 
-## Быстрый старт (локально, Ansible)
+## Установка зависимостей
 
-1) Установите зависимости и коллекции:
+### Вариант A — системные пакеты (рекомендуется)
 ```bash
-python3 -m pip install --upgrade pip
-pip install "ansible==9.*"
+sudo apt-get update
+sudo apt-get install -y ansible ansible-lint jq curl
 ansible-galaxy collection install -r ansible/collections/requirements.yml
 ```
 
-2) Заполните инвентарь `ansible/inventories/example.ini` (или используйте свой):
-```ini
-[marzban_nodes]
-203.0.113.10 ansible_user=root
-# node2.example.com ansible_user=root
-```
-
-3) (Опционально) отредактируйте `ansible/group_vars/all.yml` (порты, REST-протокол и т.д.)
-
-4) Запустите плейбук:
+### Вариант B — через venv (если нужно изолированно)
 ```bash
-ansible-playbook -i ansible/inventories/example.ini ansible/playbooks/provision_node.yml   -e panel_url="https://panel.example.com"   -e panel_username="admin"   -e panel_password="S3cr3t"   -e panel_validate_certs=true
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip "ansible==9.*" ansible-lint
+ansible-galaxy collection install -r ansible/collections/requirements.yml
+```
+`.venv/` уже исключён в `.gitignore`.
+
+---
+
+## Инвентарь и секреты
+
+- Пример: `ansible/inventories/example.ini`:
+  ```ini
+  [marzban_nodes]
+  203.0.113.10 ansible_user=root
+  ```
+
+- Либо `ssh_config.yml` (plugin: `community.general.ssh_config`) — использовать алиасы из `~/.ssh/config`:
+  ```yaml
+  plugin: community.general.ssh_config
+  strict: false
+  ```
+
+- Секреты задавайте через **`.env`** (см. `.env.example`) или GitHub Secrets.
+
+### `.env.example` (фрагмент)
+```dotenv
+# Panel API
+PANEL_URL=
+PANEL_USERNAME=
+PANEL_PASSWORD=
+PANEL_VERIFY_TLS=true
+
+# Inventory (локально)
+INV=ansible/inventories/prod.ini
+
+# Cert-master (TLS sync)
+CERT_MASTER=nl-ams-1
+CERT_MASTER_USER=root
+CERT_SERVERS_FILE=/root/etc/cert-sync-servers.txt
+
+# Cloudflare
+CF_API_TOKEN=
+CF_ZONE=digitalstreamers.xyz
+# CF_ZONE_ID=
+
+# Script defaults (scripts/add-node.sh)
+SSH_TARGET=nl-ams-3
+SSH_KEY=~/.ssh/id_rsa
+
+# Optional script flags
+# SKIP_UPGRADE=false
+# SKIP_DOCKER=false
+# SKIP_REGISTER=false
 ```
 
-После выполнения:
-- на узле появится `/var/lib/marzban-node/ssl_client_cert.pem`
-- запустится контейнер `gozargah/marzban-node:latest` (host network)
-- узел будет добавлен в панель через API
+Добавьте в `.gitignore`:
+```
+# Inventories/host vars (секреты)
+ansible/inventories/prod.ini
+ansible/host_vars/*
+.env
+```
 
 ---
 
-## Запуск через GitHub Actions
+## Основные сценарии (Makefile)
 
-1) Включите в Secrets репозитория:
-- `PANEL_URL` — URL вашей панели (например, `https://panel.example.com`)
-- `PANEL_USERNAME`
-- `PANEL_PASSWORD`
-- `SSH_PRIVATE_KEY` — приватный SSH-ключ с доступом к узлам
+> Используйте `LIMIT=<host>` для операций с конкретным узлом.  
+> Если цель работает на `localhost`, Makefile автоматически добавит `,localhost` в `--limit`.
 
-2) Откройте **Actions → Deploy Marzban Node → Run workflow** и заполните поля:
-- `nodes` — список IP/доменных имён (по одному в строке)
-- `ssh_user` — пользователь на узлах (обычно `root`)
-- опционально: `service_port`, `api_port`, `add_as_new_host`, `usage_coefficient`, `panel_verify_tls`
+### 1) Полный деплой узла
+```bash
+make deploy LIMIT=nl-ams-3
+```
+Делает: panel_api → os_update → marzban_node → haproxy → nginx → tls_sync → panel_register.
 
-Workflow сам создаст динамический инвентарь и запустит Ansible-плейбук.
+### 2) Обновление ОС только
+```bash
+make update-only LIMIT=nl-ams-3
+```
+
+### 3) Только контейнер узла
+```bash
+make container-only LIMIT=nl-ams-3
+```
+
+### 4) Только прокси (HAProxy+nginx)
+```bash
+make proxy-only LIMIT=nl-ams-3
+```
+
+### 5) Только TLS-сертификат
+```bash
+make tls-only LIMIT=nl-ams-3
+```
+
+### 6) Регистрация в панели / правка Host Settings + REALITY
+```bash
+make panel-register LIMIT=nl-ams-3
+# dry-run (только показать payload для /api/hosts):
+make panel-register LIMIT=nl-ams-3 EXTRA='-e panel_register_hosts_dry_run=true'
+```
+
+### 7) Удаление узла из панели (unregister)
+```bash
+make panel-unregister LIMIT=nl-ams-3
+```
+
+### 8) Cloudflare DNS — применить записи для узла
+```bash
+make dns-apply LIMIT=nl-ams-3
+```
+
+### 9) Cloudflare DNS — purge всех записей по IP
+```bash
+make cf-dns-purge-ip LIMIT=nl-ams-3
+# или вручную:
+make cf-dns-purge-ip PURGE_IP=45.142.164.36
+```
+
+### 10) Cert-master — удалить узел из allow-list
+```bash
+make cert-master-unenroll LIMIT=nl-ams-3
+```
+
+### 11) «Каскадный» вывод узла из эксплуатации
+```bash
+make purge-node LIMIT=nl-ams-3
+# (включает: panel-unregister → cf-dns-purge-ip → cert-master-unenroll)
+```
+
+### 12) Проверки прокси на узле
+```bash
+make proxy-check LIMIT=nl-ams-3
+```
+Проверяет конфиги, сервисы, порты и SNI (curl с --resolve).
 
 ---
 
-## Переменные (по умолчанию)
+## Что делает плейбук `provision_node.yml` (по ролям)
 
-Файл `ansible/group_vars/all.yml`:
+- **panel_api** (локально): получает токен панели.
+- **os_update**: бесшумное обновление пакетов; перезагрузка при необходимости.
+- **marzban_node**: Docker, каталог `/var/lib/marzban-node`, запуск контейнера с `SSL_CLIENT_CERT_FILE` и `SERVICE_PROTOCOL=rest`.
+- **haproxy**/**nginx**: ставит пакеты и деплоит конфиги (`/etc/haproxy/haproxy.cfg`, nginx на 127.0.0.1:8443).
+- **tls_sync**: читает `fullchain.pem`/`privkey.pem` с **cert-master** и кладёт их в `/etc/letsencrypt/live/<domain>/` на узле; проверяет subject.
+- **panel_register** (локально):
+  - создаёт Node (409 → находит существующий `node_id`);
+  - **Host Settings**: для выбранных inbound-тегов добавляет/обновляет запись хоста узла (поддержка **multi-SNI** — через запятую);
+  - **REALITY**: достаёт `serverNames` из `/api/core/config` по `tag`, **добавляет** домены узла (`panel_register_address` + `panel_register_reality_extra_names`) без удаления существующих, `PUT /api/core/config` + `POST /api/core/restart`.
+- **panel_unregister** (локально):
+  - чистит хост из Host Settings, удаляет домены из REALITY, перезапускает core;
+  - удаляет сам Node.
+- **cf_dns**: создаёт A-записи Cloudflare для узла.
+- **cf_dns_purge_ip**: удаляет ВСЕ DNS-записи зоны, у которых `content == <IP>`.
+- **cert_master_enroll**: добавляет/удаляет узел в списке рассылки сертификатов на master.
+
+Все роли имеют теги для выборочного запуска (см. Makefile).
+
+---
+
+## Настройка Host Settings и REALITY
+
+В `host_vars/<узел>.yml` задайте минимум:
 
 ```yaml
-service_port: 62050         # порт сервиса узла
-api_port: 62051             # порт API узла
-add_as_new_host: true       # добавить хост во все inbound'ы
-usage_coefficient: 1.0      # коэффициент учёта трафика
-service_protocol: "rest"    # используем REST-протокол для узла
+# Имя inbound с REALITY (точный tag в core config)
+panel_register_reality_inbound_tag: "VLESS TCP REALITY"
 
-panel_validate_certs: true  # проверка TLS-сертификата панели
+# Адрес/имя узла — FQDN для Host Settings, и добавляется в REALITY
+panel_register_address: "edge-ams-03.digitalstreamers.xyz"
+
+# Дополнительные FQDN для REALITY (и для мульти-SNI)
+panel_register_reality_extra_names:
+  - "edge-ams-03.digitalstreamers.xyz"
+  - "stream-ams-03.digitalstreamers.xyz"
+  - "cache-ams-03.digitalstreamers.xyz"
+  - "segment-ams-03.digitalstreamers.xyz"
+
+# Теги inbound'ов, куда добавлять хост в Host Settings
+panel_register_hosts_inbound_tags:
+  - "vless"
+# multi-SNI (строка формируется автоматически из address + extra_names;
+# при желании можно задать приоритетное имя):
+# panel_register_hosts_sni_preferred: "edge-ams-03.digitalstreamers.xyz"
 ```
 
-> Эти значения можно переопределять в инвентаре или через `-e` при запуске плейбука/джобы.
+> Для Cloudflare DNS: добавьте `cf_dns_records` с нужным набором A-записей (см. существующие примеры).  
+> Для «общих» записей (`www`, `site`) отключайте поведение «solo default» в вашей конфигурации DNS-роли (мы поддерживаем оба сценария).
 
 ---
 
-## Тихое обновление системы (опционально)
+## Скрипт `scripts/add-node.sh`
 
-Чтобы перед установкой Docker обновить систему **без вопросов**, в плейбуке уже есть заготовка. Она:
-- включает noninteractive режим APT
-- заставляет `needrestart` автоматически перезапускать сервисы
-- выполняет `dist-upgrade` + autoremove/autoclean
-- по необходимости делает `reboot`
+Альтернатива Ansible для единичных инсталляций. Поддерживает флаги:
+- `SKIP_UPGRADE=true` — пропустить обновление ОС,
+- `SKIP_DOCKER=true` — пропустить установку Docker/контейнера,
+- `SKIP_REGISTER=true` — пропустить регистрацию в панели.
 
-Если вы хотите **принимать новые конфиги** при обновлении — замените `--force-confold` на `--force-confnew` в конфиге APT.
-
----
-
-## Скрипт «одной кнопкой» (альтернатива Ansible)
-
-Для единичных узлов есть `scripts/add-node.sh`:
-```bash
-export PANEL_URL="https://panel.example.com"
-export PANEL_USERNAME="admin"
-export PANEL_PASSWORD="S3cr3t"
-export NODE="203.0.113.10"      # адрес узла
-export SSH_USER="root"          # пользователь на узле
-# export PANEL_VERIFY_TLS=false # если у панели самоподписанный TLS
-
-./scripts/add-node.sh
-```
-
-Скрипт:
-1) получает токен панели
-2) скачивает сертификат узла
-3) ставит Docker при необходимости, кладёт сертификат на узел
-4) запускает контейнер узла
-5) регистрирует узел в панели
+Также можно вызвать отдельную синхронизацию TLS с cert-master (см. цель `script-sync-cert` в Makefile, если включили).
 
 ---
 
-## Частые вопросы
+## GitHub Actions
 
-**1) Панель с самоподписанным сертификатом, запросы `curl`/`uri` падают.**  
-Запускайте плейбук/скрипт с параметром `panel_validate_certs=false` (Ansible) или `PANEL_VERIFY_TLS=false` (скрипт). Используйте это только временно.
+В репозитории есть workflow **Deploy Marzban Node**.  
+Он умеет запускать **полный деплой** или **частичные режимы**, а после полного — выполнить **post-checks** (syntax HAProxy/nginx, активность сервисов, слушающие порты, curl-проверки SNI).  
+Переменные берутся из GitHub Secrets (`PANEL_URL`, `PANEL_USERNAME`, `PANEL_PASSWORD`/`PANEL_ACCESS_TOKEN`, `SSH_PRIVATE_KEY`, а для DNS — `CF_API_TOKEN`, `CF_ZONE`, …).
 
-**2) Узел не появляется в панели.**  
-Проверьте, что:
-- на узле запущен контейнер `marzban-node` (и находится сертификат по пути `SSL_CLIENT_CERT_FILE`)
-- фаервол пропускает порты `service_port` (по умолчанию 62050) и `api_port` (62051)
-- адрес, который вы передаёте в API (`address`) — доступен панели по сети
+---
 
-**3) Можно ли использовать RPyC вместо REST?**  
-Рекомендован REST. При необходимости вы можете адаптировать переменные окружения контейнера под RPyC, но плейбук ориентирован на REST.
+## Частые проблемы
 
-**4) Как удалить узел с сервера?**  
-```bash
-docker rm -f marzban-node || true
-rm -f /var/lib/marzban-node/ssl_client_cert.pem
-```
+- **Не видит инвентарь/хосты** — проверьте `INV` в `.env`, содержимое `prod.ini` или корректность `ssh_config.yml` и наличие коллекции `community.general`.
+- **Узел недоступен по SSH** — проверьте ключ, `~/.ssh/config`, `known_hosts`, секцию `ansible_user`, а также фаервол.
+- **Host Settings возвращает 400/“Inbound X doesn’t exist”** — убедитесь, что используете **правильные теги** inbound’ов (`vless`, `shadowsocks`) или отключите теги, которых нет.
+- **REALITY не меняется** — проверьте `panel_register_reality_inbound_tag` (точный **tag** из core-конфига) и наличие `streamSettings.realitySettings` у этого inbound.
 
 ---
 
 ## Лицензия
 
-MIT. Смотрите файл `LICENSE`.
+MIT. См. `LICENSE`.
