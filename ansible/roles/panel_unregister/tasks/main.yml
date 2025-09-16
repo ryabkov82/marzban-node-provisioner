@@ -353,7 +353,7 @@
 - name: Node | Not found (skip delete)
   when:
     - panel_unregister_delete_node | bool
-    - (panel_unregister_node_id | default('') | string | length) > 0
+    - (panel_unregister_node_id | default('') | string | length) == 0
   delegate_to: localhost
   ansible.builtin.debug:
     msg: "Node '{{ panel_unregister_node_name }}' not found. Skipping DELETE."
