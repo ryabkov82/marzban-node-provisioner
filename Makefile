@@ -160,23 +160,23 @@ proxy-with-tls: ## tls_sync + haproxy + nginx (proxy layer with real cert)
 		$(EXTRA)
 
 proxy-check: ## Check haproxy/nginx configs, services, ports, SNI
-        $(LOAD_ENV)
-        @host="$${LIMIT:?Set LIMIT=<host> or group}"; \
-        ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'haproxy -c -f /etc/haproxy/haproxy.cfg'
-        ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'nginx -t'
-        ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'systemctl is-active haproxy; systemctl is-active nginx'
-        ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
-        ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1'
+		$(LOAD_ENV)
+		@host="$${LIMIT:?Set LIMIT=<host> or group}"; \
+		ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'haproxy -c -f /etc/haproxy/haproxy.cfg'
+		ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'nginx -t'
+		ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'systemctl is-active haproxy; systemctl is-active nginx'
+		ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'ss -lntp | egrep ":443|:1936|:8443|:8444" || true'
+		ansible -i "$${INV:-$(INV)}" $$host -m shell -a 'curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1'
 
 xray-update: ## Update Xray core on marzban-node container (use LIMIT=<host>, optional XRAY_VERSION=v...)
-        $(LOAD_ENV)
-        : $${LIMIT:?Set LIMIT=<inventory host>}
-        version="$${XRAY_VERSION:-v25.8.3}"
-        $(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
-                --tags xray_update \
-                --limit "$$LIMIT" \
-                -e xray_core_version="$$version" \
-                $(EXTRA)
+		$(LOAD_ENV)
+		: $${LIMIT:?Set LIMIT=<inventory host>}
+		version="$${XRAY_VERSION:-v25.8.3}"
+		$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
+				--tags xray_update \
+				--limit "$$LIMIT" \
+				-e xray_core_version="$$version" \
+				$(EXTRA)
 
 # Регистрируем конкретный узел из инвентаря
 # make panel-register LIMIT=nl-ams-3
