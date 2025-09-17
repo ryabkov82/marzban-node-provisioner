@@ -16,6 +16,7 @@
   - создание Node (`POST /api/node`) с нужным адресом/портами;
   - **Host Settings**: добавление/обновление хоста узла; поддержка **multi-SNI** (значения через запятую — Marzban выберет одно случайно);
   - **REALITY**: чтение и **добавление** FQDN в `streamSettings.realitySettings.serverNames` через `PUT /api/core/config` (без очистки существующих) + **перезапуск core**.
+- **Xray core update**: скачивание релиза Xray (по умолчанию `v25.8.3`), замена бинаря и баз GeoIP/GeoSite внутри контейнера `marzban-node`, фиксация установленной версии.
 - **Cloudflare DNS**:
   - создание A-записей для узла (по списку из `host_vars`);
   - «solo default» можно отключать для общих записей (например, `www`, `site`);
@@ -227,6 +228,13 @@ make proxy-check LIMIT=nl-ams-3
 ```
 Проверяет конфиги, сервисы, порты и SNI (curl с --resolve).
 
+### 13) Обновление ядра Xray в контейнере
+```bash
+make xray-update LIMIT=nl-ams-3              # обновит до версии по умолчанию (v25.8.3)
+make xray-update LIMIT=nl-ams-3 XRAY_VERSION=v26.0.0
+```
+Цель запускает роль `xray_core` (тег `xray_update`), скачивает релиз Xray под архитектуру узла, копирует бинарь и базы внутрь контейнера `marzban-node`, перезапускает его при необходимости и записывает установленную версию в `/var/lib/marzban-node/.xray-core-version`.
+
 ---
 
 ## Что делает плейбук `provision_node.yml` (по ролям)
@@ -234,6 +242,7 @@ make proxy-check LIMIT=nl-ams-3
 - **panel_api** (локально): получает токен панели.
 - **os_update**: бесшумное обновление пакетов; перезагрузка при необходимости.
 - **marzban_node**: Docker, каталог `/var/lib/marzban-node`, запуск контейнера с `SSL_CLIENT_CERT_FILE` и `SERVICE_PROTOCOL=rest`.
+- **xray_core** (тег `xray_update`): опционально обновляет Xray core внутри контейнера `marzban-node`, скачивая указанный релиз (по умолчанию `v25.8.3`) и обновляя бинарь, `geoip.dat` и `geosite.dat`.
 - **haproxy**/**nginx**: ставит пакеты и деплоит конфиги (`/etc/haproxy/haproxy.cfg`, nginx на 127.0.0.1:8443).
 - **tls_sync**: читает `fullchain.pem`/`privkey.pem` с **cert-master** и кладёт их в `/etc/letsencrypt/live/<domain>/` на узле; проверяет subject.
 - **panel_register** (локально):
@@ -427,6 +436,8 @@ make container-only LIMIT=nl-ams-3   # docker + marzban-node
 make panel-register LIMIT=nl-ams-3   # регистрация в панели (Host Settings + REALITY)
 ```
 
+Чтобы сменить версию ядра Xray после или между деплоями, запустите `make xray-update LIMIT=<узел>` (опционально `XRAY_VERSION=v...`), см. раздел «Основные сценарии» выше.
+
 ### 9) Проверьте прокси/доступность
 ```bash
 make proxy-check LIMIT=nl-ams-3
@@ -445,6 +456,7 @@ make proxy-check LIMIT=nl-ams-3
 ### Быстрая диагностика
 
 - `ssh nl-ams-3 "docker ps | grep marzban-node"`
+- `ssh nl-ams-3 "docker exec marzban-node /usr/local/bin/xray version"`
 - `ssh nl-ams-3 "ss -lntp | egrep ':443|:1936|:8443|:8444' || true"`
 - `curl -ks --resolve site.digitalstreamers.xyz:443:127.0.0.1 https://site.digitalstreamers.xyz/ | head -1` (с узла)
 - Если `Permission denied (publickey)` — проверьте `~/.ssh/config` и содержимое `authorized_keys` на узле.
