@@ -36,7 +36,7 @@
 
     # Обновление ядра Xray внутри контейнера marzban-node
     - role: xray_core
-      tags: [never, xray_update]
+      tags: [xray_update]
 
     # Прокси-слой
     - { role: haproxy, tags: [haproxy] }

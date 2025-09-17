@@ -70,6 +70,7 @@ marzban-node-provisioner/
 │     ├─ panel_unregister/
 │     ├─ cf_dns/
 │     ├─ cf_dns_purge_ip/
+│     ├─ xray_core/
 │     └─ cert_master_enroll/
 └─ scripts/
    └─ add-node.sh
@@ -242,7 +243,7 @@ make xray-update LIMIT=nl-ams-3 XRAY_VERSION=v26.0.0
 - **panel_api** (локально): получает токен панели.
 - **os_update**: бесшумное обновление пакетов; перезагрузка при необходимости.
 - **marzban_node**: Docker, каталог `/var/lib/marzban-node`, запуск контейнера с `SSL_CLIENT_CERT_FILE` и `SERVICE_PROTOCOL=rest`.
-- **xray_core** (тег `xray_update`): опционально обновляет Xray core внутри контейнера `marzban-node`, скачивая указанный релиз (по умолчанию `v25.8.3`) и обновляя бинарь, `geoip.dat` и `geosite.dat`.
+- **xray_core** (тег `xray_update`): обновляет Xray core внутри контейнера `marzban-node`, скачивая указанный релиз (по умолчанию `v25.8.3`) и обновляя бинарь, `geoip.dat` и `geosite.dat`.
 - **haproxy**/**nginx**: ставит пакеты и деплоит конфиги (`/etc/haproxy/haproxy.cfg`, nginx на 127.0.0.1:8443).
 - **tls_sync**: читает `fullchain.pem`/`privkey.pem` с **cert-master** и кладёт их в `/etc/letsencrypt/live/<domain>/` на узле; проверяет subject.
 - **panel_register** (локально):
