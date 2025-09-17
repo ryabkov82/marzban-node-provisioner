@@ -170,11 +170,16 @@ proxy-check: ## Check haproxy/nginx configs, services, ports, SNI
 
 xray-update: ## Update Xray core on marzban-node container (use LIMIT=<host>, optional XRAY_VERSION=v...)
 		$(LOAD_ENV)
-		: $${LIMIT:?Set LIMIT=<inventory host>}
 		version="$${XRAY_VERSION:-v25.8.3}"
+		limit="$${LIMIT-}"
+		if [ -n "$$limit" ]; then
+				limit_flag=(--limit "$$limit")
+		else
+				limit_flag=()
+		fi
 		$(ANSIBLE) -i "$${INV:-$(INV)}" "$(PLAY)" \
 				--tags xray_update \
-				--limit "$$LIMIT" \
+				"$${limit_flag[@]}" \
 				-e xray_core_version="$$version" \
 				$(EXTRA)
 
