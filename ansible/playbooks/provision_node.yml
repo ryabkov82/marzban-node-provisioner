@@ -34,6 +34,10 @@
       # пробросим сертификат панели в роль (если panel_api его получал)
       panel_certificate: "{{ hostvars['localhost'].panel_certificate | default('') }}"
 
+    # Обновление ядра Xray внутри контейнера marzban-node
+    - role: xray_core
+      tags: [never, xray_update]
+
     # Прокси-слой
     - { role: haproxy, tags: [haproxy] }
     - { role: nginx, tags: [nginx] }

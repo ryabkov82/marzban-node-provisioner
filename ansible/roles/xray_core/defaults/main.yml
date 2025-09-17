@@ -1,0 +1,18 @@
+---
+# Default Xray core release tag to install. Can be overridden per-host or via extra vars.
+xray_core_version: "v25.8.3"
+
+# Docker container that runs marzban-node and hosts the Xray core binary.
+xray_core_container_name: "marzban-node"
+
+# Force updating the Xray core even if the recorded version matches the desired one.
+xray_core_force_update: false
+
+# Base URL used to download Xray core releases.
+xray_core_download_base: "https://github.com/XTLS/Xray-core/releases/download"
+
+# Directory on the node used to store state files related to Xray updates.
+xray_core_state_dir: "{{ ssl_dir | default('/var/lib/marzban-node') }}"
+
+# Path to the file that keeps track of the last installed Xray version.
+xray_core_version_state_file: "{{ xray_core_state_dir.rstrip('/') }}/.xray-core-version"
