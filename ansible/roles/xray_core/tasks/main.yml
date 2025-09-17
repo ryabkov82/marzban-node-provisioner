@@ -1,0 +1,142 @@
+---
+- name: Gather marzban-node container info
+  community.docker.docker_container_info:
+    name: "{{ xray_core_container_name }}"
+  register: xray_core_container_info
+
+- name: Ensure marzban-node container exists
+  ansible.builtin.fail:
+    msg: >-
+      Container '{{ xray_core_container_name }}' not found. Deploy the marzban-node role before
+      attempting to update the Xray core.
+  when: not xray_core_container_info.exists
+
+- name: Remember container running state
+  ansible.builtin.set_fact:
+    xray_core_container_was_running: "{{ (xray_core_container_info.container.State.Running | default(false)) | bool }}"
+
+- name: Read recorded Xray core version (if any)
+  ansible.builtin.slurp:
+    src: "{{ xray_core_version_state_file }}"
+  register: xray_core_version_state
+  ignore_errors: true
+
+- name: Set recorded version fact
+  ansible.builtin.set_fact:
+    xray_core_version_recorded: "{{ xray_core_version_state.content | b64decode | trim }}"
+  when: not xray_core_version_state.failed | default(false)
+
+- name: Determine whether Xray core update is required
+  ansible.builtin.set_fact:
+    xray_core_update_required: "{{ ((xray_core_force_update | bool) or ((xray_core_version_recorded | default('')) != xray_core_version)) | bool }}"
+
+- name: Show current Xray core status
+  ansible.builtin.debug:
+    msg: >-
+      Xray core version {{ xray_core_version_recorded | default('unknown') }} is already installed;
+      skipping update.
+  when: not xray_core_update_required | bool
+
+- name: Ensure unzip package present for archive extraction
+  ansible.builtin.package:
+    name: unzip
+    state: present
+  when: xray_core_update_required | bool
+
+- name: Build architecture to release asset map
+  ansible.builtin.set_fact:
+    xray_core_release_map:
+      x86_64: Xray-linux-64.zip
+      amd64: Xray-linux-64.zip
+      aarch64: Xray-linux-arm64-v8a.zip
+      arm64: Xray-linux-arm64-v8a.zip
+  when: xray_core_update_required | bool
+
+- name: Determine Xray release asset for this architecture
+  ansible.builtin.set_fact:
+    xray_core_release_asset: "{{ xray_core_release_map.get(ansible_architecture) }}"
+  when: xray_core_update_required | bool
+
+- name: Ensure architecture is supported
+  ansible.builtin.assert:
+    that: xray_core_release_asset is not none
+    fail_msg: "Unsupported architecture '{{ ansible_architecture }}' for Xray core update"
+  when: xray_core_update_required | bool
+
+- name: Create temporary directory for Xray release
+  ansible.builtin.tempfile:
+    state: directory
+    suffix: xray-core
+  register: xray_core_tmp_dir
+  when: xray_core_update_required | bool
+
+- name: Download Xray release archive
+  ansible.builtin.get_url:
+    url: "{{ xray_core_download_base.rstrip('/') }}/{{ xray_core_version }}/{{ xray_core_release_asset }}"
+    dest: "{{ xray_core_tmp_dir.path }}/{{ xray_core_release_asset }}"
+    mode: "0644"
+    force: true
+  when: xray_core_update_required | bool
+
+- name: Extract Xray release archive
+  ansible.builtin.unarchive:
+    src: "{{ xray_core_tmp_dir.path }}/{{ xray_core_release_asset }}"
+    dest: "{{ xray_core_tmp_dir.path }}"
+    remote_src: true
+  when: xray_core_update_required | bool
+
+- name: Copy Xray binary into container
+  ansible.builtin.command:
+    cmd: "docker cp {{ xray_core_tmp_dir.path }}/xray {{ xray_core_container_name }}:/usr/local/bin/xray"
+  changed_when: true
+  when: xray_core_update_required | bool
+
+- name: Copy geoip database into container
+  ansible.builtin.command:
+    cmd: "docker cp {{ xray_core_tmp_dir.path }}/geoip.dat {{ xray_core_container_name }}:/usr/local/share/xray/geoip.dat"
+  changed_when: true
+  when: xray_core_update_required | bool
+
+- name: Copy geosite database into container
+  ansible.builtin.command:
+    cmd: "docker cp {{ xray_core_tmp_dir.path }}/geosite.dat {{ xray_core_container_name }}:/usr/local/share/xray/geosite.dat"
+  changed_when: true
+  when: xray_core_update_required | bool
+
+- name: Restart marzban-node container to apply new Xray core
+  community.docker.docker_container:
+    name: "{{ xray_core_container_name }}"
+    state: started
+    restart: true
+  when:
+    - xray_core_update_required | bool
+    - xray_core_container_was_running | bool
+
+- name: Ensure Xray binary has execute permissions
+  community.docker.docker_container_exec:
+    container: "{{ xray_core_container_name }}"
+    command: chmod 755 /usr/local/bin/xray
+  when:
+    - xray_core_update_required | bool
+    - xray_core_container_was_running | bool
+  changed_when: false
+
+- name: Ensure directory for Xray state file exists
+  ansible.builtin.file:
+    path: "{{ xray_core_state_dir }}"
+    state: directory
+    mode: "0755"
+  when: xray_core_update_required | bool
+
+- name: Record installed Xray version
+  ansible.builtin.copy:
+    dest: "{{ xray_core_version_state_file }}"
+    content: "{{ xray_core_version }}\n"
+    mode: "0644"
+  when: xray_core_update_required | bool
+
+- name: Remove temporary Xray release directory
+  ansible.builtin.file:
+    path: "{{ xray_core_tmp_dir.path }}"
+    state: absent
+  when: xray_core_update_required | bool
