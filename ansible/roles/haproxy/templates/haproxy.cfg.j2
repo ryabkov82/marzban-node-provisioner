@@ -37,6 +37,7 @@ frontend https_in
     mode tcp
     option tcplog
     tcp-request inspect-delay 5s
+    tcp-request content accept if { req_ssl_hello_type 1 }
     tcp-request content capture req.ssl_sni len 256
 {% for d in website_domains %}
     acl is_website req.ssl_sni -i {{ d }}
